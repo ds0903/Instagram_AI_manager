@@ -1,8 +1,10 @@
 """
 AI Agent - Claude API integration
 Chytaje prompts.yml, formuje kontekst, vidpravliaje do Claude
+Integratsija z Google Sheets (baza znan) ta Telegram (eskalatsiia)
 """
 import os
+import re
 import yaml
 import anthropic
 from pathlib import Path
@@ -15,6 +17,15 @@ logger = logging.getLogger(__name__)
 # Zavantazhujemo prompty z YAML
 PROMPTS_FILE = Path(__file__).parent / 'prompts.yml'
 
+# Tryhery dlia eskalatsii (peredacha operatoru)
+ESCALATION_TRIGGERS = [
+    'menedzher', 'manager', 'operator', 'liudyna', 'ljudyna', 'chelovek',
+    'poklykaty', 'poklychte', 'pozovit', 'pozovite', 'hochu z lydynoiu',
+    'zhyva liudyna', 'zhyva ljudyna', 'real person', 'human',
+    'skarha', 'skarga', 'complaint', 'povernet', 'return', 'refund',
+    'skandal', 'obman', 'shakhraj', 'fraud'
+]
+
 
 class AIAgent:
     def __init__(self, db):
@@ -24,7 +35,42 @@ class AIAgent:
         )
         self.model = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-20250514')
         self.prompts = self._load_prompts()
+
+        # Google Sheets Manager (baza znan)
+        self.sheets_manager = None
+        self._init_google_sheets()
+
+        # Telegram Notifier (eskalatsiia)
+        self.telegram = None
+        self._init_telegram()
+
         logger.info(f"AI Agent iniitsializovano, model: {self.model}")
+
+    def _init_google_sheets(self):
+        """Iniitsializatsiia Google Sheets Manager."""
+        try:
+            from google_sheets import GoogleSheetsManager
+            self.sheets_manager = GoogleSheetsManager()
+            if self.sheets_manager.connect():
+                logger.info("Google Sheets pidkliucheno")
+            else:
+                logger.warning("Google Sheets ne pidkliucheno - bude vykorystano lokalni dani")
+                self.sheets_manager = None
+        except Exception as e:
+            logger.warning(f"Google Sheets nedostupnyj: {e}")
+            self.sheets_manager = None
+
+    def _init_telegram(self):
+        """Iniitsializatsiia Telegram Notifier."""
+        try:
+            from telegram_notifier import TelegramNotifier
+            self.telegram = TelegramNotifier()
+            if not self.telegram.enabled:
+                logger.warning("Telegram ne nalashtvano")
+                self.telegram = None
+        except Exception as e:
+            logger.warning(f"Telegram nedostupnyj: {e}")
+            self.telegram = None
 
     def _load_prompts(self) -> dict:
         """Zavantazhennia promptiv z YAML fajlu."""
@@ -59,7 +105,15 @@ class AIAgent:
         return messages
 
     def _get_products_context(self, query: str = None) -> str:
-        """Otrymaty kontekst pro tovary dlia promptu."""
+        """Otrymaty kontekst pro tovary dlia promptu (Google Sheets abo DB)."""
+        # Sproba Google Sheets
+        if self.sheets_manager:
+            try:
+                return self.sheets_manager.get_products_context_for_ai(query)
+            except Exception as e:
+                logger.warning(f"Pomylka Google Sheets: {e}")
+
+        # Fallback na DB
         if query:
             products = self.db.search_products(query)
         else:
@@ -70,9 +124,55 @@ class AIAgent:
 
         products_text = "Dostupni tovary:\n"
         for p in products:
-            products_text += f"- {p['name']}: {p['price']} grn, rozmiry: {p['sizes']}, material: {p['material']}\n"
+            products_text += f"- {p['name']}: {p['price']} grn, rozmiry: {p.get('sizes', 'N/A')}, material: {p.get('material', 'N/A')}\n"
 
         return products_text
+
+    def _check_escalation(self, message: str) -> bool:
+        """Pereviryty chy potrebujetsja eskalatsiia (peredacha operatoru)."""
+        message_lower = message.lower()
+        for trigger in ESCALATION_TRIGGERS:
+            if trigger in message_lower:
+                logger.info(f"Znajdeno tryher eskalatsii: '{trigger}'")
+                return True
+        return False
+
+    def _check_behavior_rules(self, message: str) -> dict:
+        """Pereviryty pravyla povedinky z Google Sheets."""
+        if self.sheets_manager:
+            try:
+                return self.sheets_manager.check_triggers(message)
+            except Exception as e:
+                logger.warning(f"Pomylka perevirky pravyl: {e}")
+        return None
+
+    def _extract_phone(self, message: str) -> str:
+        """Vytiahuty telefon z povidomlennia."""
+        # Shukajemo ukrainski ta mizhnarodni nomery
+        patterns = [
+            r'\+380\d{9}',           # +380XXXXXXXXX
+            r'380\d{9}',             # 380XXXXXXXXX
+            r'0\d{9}',               # 0XXXXXXXXX
+            r'\d{3}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}',  # XXX XXX XX XX
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if match:
+                return match.group()
+        return None
+
+    def escalate_to_human(self, username: str, display_name: str,
+                          reason: str, last_message: str) -> bool:
+        """Vidpravyty povidomlennia pro eskalatsiiu v Telegram."""
+        if self.telegram:
+            return self.telegram.notify_escalation(
+                username=username,
+                display_name=display_name,
+                reason=reason,
+                last_message=last_message
+            )
+        logger.warning("Telegram ne nalashtvano, eskalatsiia ne vidpravlena")
+        return False
 
     def generate_response(self, username: str, user_message: str,
                           display_name: str = None,
@@ -162,9 +262,10 @@ class AIAgent:
         """
         Povnyj tsykl obrobky povidomlennia:
         1. Zberezhennia user message v DB
-        2. Generatsiya vidpovidi
-        3. Zberezhennia assistant message v DB
-        4. Povertaie tekst vidpovidi
+        2. Perevirka eskalatsii
+        3. Stvorennia/onovlennia lida
+        4. Generatsiya vidpovidi
+        5. Zberezhennia assistant message v DB
 
         Returns:
             Tekst vidpovidi dlia vidpravky
@@ -184,26 +285,66 @@ class AIAgent:
         )
         logger.info(f"Zberezeno user message id={user_msg_id} vid {username}")
 
-        # 3. Generujemo vidpovid
-        response_text = self.generate_response(
+        # 3. Stvorjujemo/onovljujemo lida
+        phone = self._extract_phone(content)
+        self.db.create_or_update_lead(
             username=username,
-            user_message=content,
             display_name=display_name,
-            message_type=message_type,
-            image_data=image_data
+            phone=phone
         )
+        logger.info(f"Lid onovleno: {username}")
 
-        # 4. Zberigajemo vidpovid assistenta
+        # 4. Pereviriajemo eskalatsiiu
+        if self._check_escalation(content):
+            logger.info(f"Eskalatsiia dlia {username}")
+            self.escalate_to_human(
+                username=username,
+                display_name=display_name,
+                reason="Klient prosyt zviazku z operatorom",
+                last_message=content
+            )
+            # Vse odno generujemo vidpovid, ale z poperedzhennjam
+            escalation_note = self.prompts.get('escalation_response',
+                'Zrozumilo! Peredaju vashe zapytannia nashomu menedzheru. Vin zviazhetsia z vamy najblyzchym chasom.')
+            response_text = escalation_note
+        else:
+            # 5. Pereviriajemo pravyla povedinky (Google Sheets)
+            behavior_rule = self._check_behavior_rules(content)
+            if behavior_rule and behavior_rule.get('Відповідь'):
+                # Vykorystovujemo vidpovid z pravyla
+                response_text = behavior_rule.get('Відповідь')
+                logger.info(f"Zastosovano pravylo: {behavior_rule.get('Ситуація')}")
+            else:
+                # 6. Generujemo vidpovid cherez AI
+                response_text = self.generate_response(
+                    username=username,
+                    user_message=content,
+                    display_name=display_name,
+                    message_type=message_type,
+                    image_data=image_data
+                )
+
+        # 7. Zberigajemo vidpovid assistenta
         assistant_msg_id = self.db.add_assistant_message(
             username=username,
             content=response_text,
             display_name=display_name,
-            answer_id=user_msg_id  # Zviazok z povidomlenniam korystuvacha
+            answer_id=user_msg_id
         )
         logger.info(f"Zberezeno assistant message id={assistant_msg_id}")
 
-        # 5. Onovljujemo answer_id v user message
+        # 8. Onovljujemo answer_id v user message
         self.db.update_answer_id(user_msg_id, assistant_msg_id)
+
+        # 9. Spovischennja pro novoho lida (jakshcho tse pershyj kontakt)
+        lead = self.db.get_lead(username)
+        if lead and lead.get('messages_count') == 1 and self.telegram:
+            self.telegram.notify_new_lead(
+                username=username,
+                display_name=display_name,
+                phone=phone,
+                products=content[:100] if content else None
+            )
 
         return response_text
 

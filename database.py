@@ -91,6 +91,28 @@ class Database:
                 );
             """)
 
+            # Leads - potentsiini klienty
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS leads (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(255) NOT NULL UNIQUE,
+                    display_name VARCHAR(255),
+                    phone VARCHAR(50),
+                    email VARCHAR(255),
+                    city VARCHAR(100),
+                    interested_products TEXT,
+                    source VARCHAR(100) DEFAULT 'instagram_dm',
+                    status VARCHAR(50) DEFAULT 'new',
+                    notes TEXT,
+                    first_contact TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_contact TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    messages_count INTEGER DEFAULT 1
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_leads_username ON leads(username);
+                CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+            """)
+
             logger.info("Tablytsi stvoreno/perevireno")
 
     # ==================== CONVERSATIONS ====================
@@ -267,6 +289,69 @@ class Database:
             """, (username,))
             return cur.fetchall()
 
+    # ==================== LEADS ====================
+
+    def create_or_update_lead(self, username: str, display_name: str = None,
+                               phone: str = None, email: str = None,
+                               city: str = None, interested_products: str = None,
+                               notes: str = None) -> int:
+        """
+        Stvoryty abo onovyty lida.
+        Jakshcho lid vzhe isnuje - onovyty dani ta zbilshyty lichylnyk povidomlen.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO leads (username, display_name, phone, email, city, interested_products, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (username) DO UPDATE SET
+                    display_name = COALESCE(EXCLUDED.display_name, leads.display_name),
+                    phone = COALESCE(EXCLUDED.phone, leads.phone),
+                    email = COALESCE(EXCLUDED.email, leads.email),
+                    city = COALESCE(EXCLUDED.city, leads.city),
+                    interested_products = COALESCE(EXCLUDED.interested_products, leads.interested_products),
+                    notes = COALESCE(EXCLUDED.notes, leads.notes),
+                    last_contact = CURRENT_TIMESTAMP,
+                    messages_count = leads.messages_count + 1
+                RETURNING id
+            """, (username, display_name, phone, email, city, interested_products, notes))
+            return cur.fetchone()[0]
+
+    def get_lead(self, username: str) -> dict:
+        """Otrymaty lida za username."""
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM leads WHERE username = %s", (username,))
+            return cur.fetchone()
+
+    def update_lead_status(self, username: str, status: str):
+        """Onovyty status lida (new, contacted, qualified, converted, lost)."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE leads SET status = %s, last_contact = CURRENT_TIMESTAMP
+                WHERE username = %s
+            """, (status, username))
+
+    def update_lead_phone(self, username: str, phone: str):
+        """Onovyty telefon lida."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE leads SET phone = %s, last_contact = CURRENT_TIMESTAMP
+                WHERE username = %s
+            """, (phone, username))
+
+    def get_all_leads(self, status: str = None, limit: int = 100) -> list:
+        """Otrymaty vsikh lidiv (z filtrom po statusu)."""
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if status:
+                cur.execute("""
+                    SELECT * FROM leads WHERE status = %s
+                    ORDER BY last_contact DESC LIMIT %s
+                """, (status, limit))
+            else:
+                cur.execute("""
+                    SELECT * FROM leads ORDER BY last_contact DESC LIMIT %s
+                """, (limit,))
+            return cur.fetchall()
+
     def close(self):
         """Zakryty ziednannia."""
         if self.conn:
@@ -287,6 +372,7 @@ def main():
         print("     - conversations (povidomlennia user/assistant)")
         print("     - products (tovary)")
         print("     - orders (zamovlennia)")
+        print("     - leads (potentsiini klienty)")
 
         # Pokazujemo strukturu tablyt's
         with db.conn.cursor() as cur:
@@ -338,6 +424,22 @@ def main():
                 nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
                 print(f"  {col[0]:<20} {col[1]:<20} {nullable}")
 
+            # Leads
+            cur.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_name = 'leads'
+                ORDER BY ordinal_position
+            """)
+            columns = cur.fetchall()
+
+            print("\n" + "-" * 60)
+            print("  LEADS table structure:")
+            print("-" * 60)
+            for col in columns:
+                nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
+                print(f"  {col[0]:<20} {col[1]:<20} {nullable}")
+
             # Kilkist zapysiv
             print("\n" + "-" * 60)
             print("  Statistics:")
@@ -354,6 +456,10 @@ def main():
             cur.execute("SELECT COUNT(*) FROM orders")
             count = cur.fetchone()[0]
             print(f"  orders: {count} records")
+
+            cur.execute("SELECT COUNT(*) FROM leads")
+            count = cur.fetchone()[0]
+            print(f"  leads: {count} records")
 
         db.close()
 
