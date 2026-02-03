@@ -1,0 +1,13 @@
+# Selenium / Chrome
+undetected-chromedriver>=3.5.0
+selenium>=4.15.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# AI / Claude
+anthropic>=0.18.0
+
+# Config
+python-dotenv>=1.0.0
+PyYAML>=6.0.1
