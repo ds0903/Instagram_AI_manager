@@ -68,21 +68,20 @@ class GoogleSheetsManager:
         """
         Отримати всі товари з аркуша "Каталог"
 
-        Очікувані колонки:
+        Очікувані колонки (з Excel):
         - Назва
-        - Артикул
-        - Категорія
-        - Ціна
-        - Розміри
+        - Куди носити
+        - Матеріал
+        - Опис товару
         - Кольори
-        - Склад (матеріал)
-        - Опис
-        - Фото URL
+        - Доступні розміри
+        - Ціна
+        - Акція - 15%
         - Супутні товари
-        - В наявності (Так/Ні)
+        - Примітка
 
         Returns:
-            list: [{назва, артикул, ціна, ...}, ...]
+            list: [{назва, матеріал, ціна, ...}, ...]
         """
         try:
             worksheet = self.spreadsheet.worksheet("Каталог")
@@ -92,24 +91,76 @@ class GoogleSheetsManager:
                 logger.warning("Kataloh porozhnij")
                 return []
 
-            headers = data[0]
-            products = []
+            # Знаходимо рядок з заголовками (може бути не перший)
+            headers = None
+            header_row_idx = 0
+            for i, row in enumerate(data):
+                if 'Назва' in row or 'Назва ' in row:
+                    headers = [h.strip() for h in row]
+                    header_row_idx = i
+                    break
 
-            for row in data[1:]:
+            if not headers:
+                logger.warning("Zaholovky ne znajdeno")
+                return []
+
+            products = []
+            current_product = None
+
+            for row in data[header_row_idx + 1:]:
                 if not row or not any(row):
                     continue
 
-                product = {}
-                for i, header in enumerate(headers):
-                    if i < len(row):
-                        product[header] = row[i]
+                # Якщо є назва - це новий товар
+                name_idx = headers.index('Назва') if 'Назва' in headers else headers.index('Назва ')
+                if row[name_idx] and row[name_idx].strip():
+                    # Зберігаємо попередній товар
+                    if current_product:
+                        products.append(current_product)
 
-                # Фільтруємо по наявності
-                in_stock = product.get('В наявності', '').strip().lower()
-                if in_stock == 'ні' or in_stock == 'no':
-                    continue
+                    current_product = {}
+                    for i, header in enumerate(headers):
+                        if i < len(row) and row[i]:
+                            current_product[header] = row[i]
 
-                products.append(product)
+                    # Ініціалізуємо список цін по розмірам
+                    current_product['prices_by_size'] = []
+                    size_col = None
+                    price_col = None
+                    for i, h in enumerate(headers):
+                        if 'розмір' in h.lower():
+                            size_col = i
+                        if 'ціна' in h.lower() and 'акція' not in h.lower():
+                            price_col = i
+
+                    if size_col is not None and price_col is not None:
+                        if row[size_col] and row[price_col]:
+                            current_product['prices_by_size'].append({
+                                'sizes': row[size_col],
+                                'price': row[price_col]
+                            })
+
+                elif current_product:
+                    # Додатковий рядок з розмірами/цінами для поточного товару
+                    size_col = None
+                    price_col = None
+                    for i, h in enumerate(headers):
+                        if 'розмір' in h.lower():
+                            size_col = i
+                        if 'ціна' in h.lower() and 'акція' not in h.lower():
+                            price_col = i
+
+                    if size_col is not None and price_col is not None:
+                        if len(row) > size_col and len(row) > price_col:
+                            if row[size_col] and row[price_col]:
+                                current_product['prices_by_size'].append({
+                                    'sizes': row[size_col],
+                                    'price': row[price_col]
+                                })
+
+            # Додаємо останній товар
+            if current_product:
+                products.append(current_product)
 
             logger.info(f"Zavantazheno {len(products)} tovariv")
             return products
@@ -186,6 +237,38 @@ class GoogleSheetsManager:
 
         logger.info(f"Znajdeno {len(result)} tovariv z rozmirom '{size}'")
         return result
+
+    def get_price_for_size(self, product: dict, size_query: str) -> dict:
+        """
+        Отримати ціну для конкретного розміру
+
+        Args:
+            product: Товар з get_products()
+            size_query: Запит розміру (напр. "158", "M", "XL")
+
+        Returns:
+            dict: {'sizes': '152-158, 158-164', 'price': '1700 грн', 'discount_price': '1445 грн'}
+        """
+        prices_by_size = product.get('prices_by_size', [])
+        size_query_lower = size_query.lower().strip()
+
+        for price_info in prices_by_size:
+            sizes = price_info.get('sizes', '').lower()
+            if size_query_lower in sizes:
+                result = {
+                    'sizes': price_info.get('sizes'),
+                    'price': price_info.get('price')
+                }
+                # Розраховуємо знижку 15%
+                try:
+                    price_num = int(''.join(filter(str.isdigit, price_info.get('price', '0'))))
+                    discount_price = int(price_num * 0.85)
+                    result['discount_price'] = f"{discount_price} грн"
+                except:
+                    pass
+                return result
+
+        return None
 
     def get_related_products(self, product: dict) -> list:
         """
@@ -438,29 +521,44 @@ class GoogleSheetsManager:
             # Шукаємо конкретні товари
             product = self.find_product_by_name(query)
             if product:
-                return f"Знайдено товар:\n- {product.get('Назва')}: {product.get('Ціна')} грн, розміри: {product.get('Розміри')}, склад: {product.get('Склад')}"
+                result = f"Знайдено товар: {product.get('Назва', product.get('Назва '))}\n"
+                result += f"Матеріал: {product.get('Матеріал', 'N/A')}\n"
+                result += f"Опис: {product.get('Опис товару', 'N/A')}\n"
+                result += f"Кольори: {product.get('Кольри', product.get('Кольори', 'N/A'))}\n"
+                result += f"Супутні товари: {product.get('Супутні товари', 'N/A')}\n"
 
-            # Пробуємо за категорією
-            products = self.find_products_by_category(query)
-            if products:
-                result = f"Товари в категорії '{query}':\n"
-                for p in products[:5]:
-                    result += f"- {p.get('Назва')}: {p.get('Ціна')} грн\n"
+                # Ціни по розмірам
+                prices = product.get('prices_by_size', [])
+                if prices:
+                    result += "Ціни по розмірам:\n"
+                    for p in prices:
+                        price_str = p.get('price', '')
+                        try:
+                            price_num = int(''.join(filter(str.isdigit, price_str)))
+                            discount = int(price_num * 0.85)
+                            result += f"  - {p.get('sizes')}: {price_str} (зі знижкою 15%: {discount} грн)\n"
+                        except:
+                            result += f"  - {p.get('sizes')}: {price_str}\n"
+
                 return result
 
             return "Товар не знайдено в каталозі."
         else:
-            # Загальний список категорій
+            # Загальний список товарів
             products = self.get_products()
-            categories = set()
-            for p in products:
-                cat = p.get('Категорія', '')
-                if cat:
-                    categories.add(cat)
+            if not products:
+                return "Каталог товарів порожній."
 
-            if categories:
-                return f"Доступні категорії товарів: {', '.join(categories)}"
-            return "Каталог товарів порожній."
+            result = "Доступні товари:\n"
+            for p in products:
+                name = p.get('Назва', p.get('Назва ', 'N/A'))
+                result += f"- {name}\n"
+                prices = p.get('prices_by_size', [])
+                if prices:
+                    for price_info in prices[:2]:  # Показуємо перші 2 ціни
+                        result += f"  {price_info.get('sizes')}: {price_info.get('price')}\n"
+
+            return result
 
 
 def main():
@@ -502,9 +600,18 @@ def main():
     print(f"Znajdeno {len(products)} tovariv")
 
     if products:
-        print("\nPershi 3 tovary:")
-        for p in products[:3]:
-            print(f"  - {p.get('Назва', 'N/A')}: {p.get('Ціна', 'N/A')} grn")
+        print("\nTovary:")
+        for p in products[:5]:
+            name = p.get('Назва', p.get('Назва ', 'N/A'))
+            print(f"\n  {name}")
+            print(f"    Material: {p.get('Матеріал', 'N/A')[:50]}...")
+            print(f"    Kolory: {p.get('Кольри', p.get('Кольори', 'N/A'))[:50]}...")
+            print(f"    Suputni: {p.get('Супутні товари', 'N/A')}")
+            prices = p.get('prices_by_size', [])
+            if prices:
+                print("    Tsiny po rozmiram:")
+                for price in prices:
+                    print(f"      - {price.get('sizes')}: {price.get('price')}")
 
     print("\n" + "-" * 60)
     print("  SHABLONY")
