@@ -1,12 +1,14 @@
 """
-AI Agent - Claude API integration
-Chytaje prompts.yml, formuje kontekst, vidpravliaje do Claude
+AI Agent - Gemini API integration
+Chytaje prompts.yml, formuje kontekst, vidpravliaje do Gemini
 Integratsija z Google Sheets (baza znan) ta Telegram (eskalatsiia)
 """
 import os
 import re
 import yaml
-import anthropic
+import base64
+from google import genai
+from google.genai import types
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
@@ -30,10 +32,10 @@ ESCALATION_TRIGGERS = [
 class AIAgent:
     def __init__(self, db):
         self.db = db
-        self.client = anthropic.Anthropic(
-            api_key=os.getenv('CLAUDE_API_KEY')
+        self.client = genai.Client(
+            api_key=os.getenv('GEMINI_API_KEY')
         )
-        self.model = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-20250514')
+        self.model = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')
         self.prompts = self._load_prompts()
 
         # Google Sheets Manager (baza znan)
@@ -89,18 +91,22 @@ class AIAgent:
 
     def _build_conversation_context(self, username: str) -> list:
         """
-        Formuvannia kontekstu rozmovy dlia Claude.
-        Povertaie list messages u formati Claude API.
+        Formuvannia kontekstu rozmovy dlia Gemini.
+        Povertaie list types.Content u formati Gemini API.
         """
         # Otrymujemo istoriiu rozmovy z DB
         history = self.db.get_conversation_history(username, limit=20)
 
         messages = []
         for msg in history:
-            messages.append({
-                "role": msg['role'],  # 'user' abo 'assistant'
-                "content": msg['content']
-            })
+            # Gemini vykorystovuje 'model' zamist 'assistant'
+            role = 'model' if msg['role'] == 'assistant' else msg['role']
+            messages.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part(text=msg['content'])]
+                )
+            )
 
         return messages
 
@@ -209,68 +215,61 @@ class AIAgent:
             # Dodajemo potochne povidomlennia
             if message_type == 'image' and image_data:
                 # Vision API - analiz zobrazhennia
-                import base64
-                image_base64 = base64.b64encode(image_data).decode('utf-8')
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": user_message or "Shcho tse za tovar? Dopomozhit z vyborom."
-                        }
-                    ]
-                })
+                text_prompt = user_message or "Shcho tse za tovar? Dopomozhit z vyborom."
+                messages.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(text=text_prompt),
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type="image/jpeg",
+                                    data=image_data
+                                )
+                            )
+                        ]
+                    )
+                )
             else:
                 # Zvychajne tekstove povidomlennia
-                messages.append({
-                    "role": "user",
-                    "content": user_message
-                })
+                messages.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=user_message)]
+                    )
+                )
 
-            # Vyklykaemo Claude API
-            response = self.client.messages.create(
+            # Vyklykaemo Gemini API
+            response = self.client.models.generate_content(
                 model=self.model,
-                max_tokens=1024,
-                system=system_prompt,
-                messages=messages
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=1024
+                )
             )
 
             # Otrymujemo tekst vidpovidi
-            assistant_message = response.content[0].text
+            assistant_message = response.text
 
             logger.info(f"Vidpovid zgenerovano dlia {username}: {assistant_message[:50]}...")
 
             return assistant_message
 
-        except anthropic.RateLimitError as e:
-            # Tokeny zakkinchylysj abo limit zapytiv
-            logger.error(f"AI Rate Limit: {e}")
-            self._notify_ai_error(f"Rate Limit (tokeny/zapyty): {e}")
-            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
-
-        except anthropic.AuthenticationError as e:
-            # Nevaldnyj API key
-            logger.error(f"AI Auth Error: {e}")
-            self._notify_ai_error(f"Authentication Error (API key): {e}")
-            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
-
-        except anthropic.APIError as e:
-            # Zagalna pomylka API
-            logger.error(f"AI API Error: {e}")
-            self._notify_ai_error(f"API Error: {e}")
-            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
-
         except Exception as e:
-            logger.error(f"Pomylka generatsii vidpovidi: {e}")
-            self._notify_ai_error(f"Nevidoma pomylka AI: {e}")
+            error_str = str(e).lower()
+            if 'rate limit' in error_str or '429' in error_str:
+                logger.error(f"AI Rate Limit: {e}")
+                self._notify_ai_error(f"Rate Limit (tokeny/zapyty): {e}")
+            elif 'authentication' in error_str or 'api key' in error_str or '401' in error_str:
+                logger.error(f"AI Auth Error: {e}")
+                self._notify_ai_error(f"Authentication Error (API key): {e}")
+            elif '400' in error_str or '500' in error_str or '503' in error_str:
+                logger.error(f"AI API Error: {e}")
+                self._notify_ai_error(f"API Error: {e}")
+            else:
+                logger.error(f"Pomylka generatsii vidpovidi: {e}")
+                self._notify_ai_error(f"Nevidoma pomylka AI: {e}")
             return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
 
     def _notify_ai_error(self, error_msg: str):
