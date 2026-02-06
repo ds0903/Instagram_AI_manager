@@ -250,9 +250,36 @@ class AIAgent:
 
             return assistant_message
 
+        except anthropic.RateLimitError as e:
+            # Tokeny zakkinchylysj abo limit zapytiv
+            logger.error(f"AI Rate Limit: {e}")
+            self._notify_ai_error(f"Rate Limit (tokeny/zapyty): {e}")
+            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
+
+        except anthropic.AuthenticationError as e:
+            # Nevaldnyj API key
+            logger.error(f"AI Auth Error: {e}")
+            self._notify_ai_error(f"Authentication Error (API key): {e}")
+            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
+
+        except anthropic.APIError as e:
+            # Zagalna pomylka API
+            logger.error(f"AI API Error: {e}")
+            self._notify_ai_error(f"API Error: {e}")
+            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
+
         except Exception as e:
             logger.error(f"Pomylka generatsii vidpovidi: {e}")
+            self._notify_ai_error(f"Nevidoma pomylka AI: {e}")
             return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
+
+    def _notify_ai_error(self, error_msg: str):
+        """Vidpravyty spovischennia pro pomylku AI v Telegram"""
+        try:
+            if self.telegram:
+                self.telegram.notify_error(f"Pomylka AI Agent:\n{error_msg}")
+        except Exception as e:
+            logger.warning(f"Ne vdalosja vidpravyty spovischennia: {e}")
 
     def process_message(self, username: str, content: str,
                         display_name: str = None,

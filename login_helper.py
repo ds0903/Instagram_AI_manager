@@ -1,6 +1,10 @@
 """
 Skript dlia ruchnoho lohinu v Instagram i zberezhennia sesii (cookies).
 Vidkryvaie Chrome, chekaie na ruchnyj login, zberihaje cookies u .pkl fajl.
+
+Nazvy sesij:
+- session_writer.pkl - holovnyj akkaunt (vidpovidaje na DM)
+- session_reader.pkl - rezervnyj akkaunt (na majbutnie)
 """
 import undetected_chromedriver as uc
 import pickle
@@ -11,6 +15,9 @@ import platform
 import re
 import subprocess
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def detect_chrome_version():
@@ -51,21 +58,23 @@ def manual_login_instagram():
     print("  RUCHNYJ LOGIN V INSTAGRAM")
     print("=" * 70)
 
-    # Vvodym ID akaunta
-    print("\nID akaunta vykorystovuietsia dlia imeni fajlu sesii")
-    print("Tsey ID maje spivpadaty z ID v boti")
-    while True:
-        try:
-            account_id = input("\nID akaunta (chyslo, napryklad 1, 2, 3...): ").strip()
-            account_id = int(account_id)
-            if account_id > 0:
-                break
-            else:
-                print("ID maje buty bilshe 0!")
-        except ValueError:
-            print("Vvedy chyslo!")
+    # Vybir sesii
+    print("\nOber typ sesii:")
+    print("  1 - session_writer.pkl (holovnyj akkaunt)")
+    print("  2 - session_reader.pkl (rezervnyj)")
 
-    print(f"\nID akaunta: {account_id}")
+    while True:
+        choice = input("\nVybir (1 abo 2): ").strip()
+        if choice == '1':
+            session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
+            break
+        elif choice == '2':
+            session_name = os.getenv('SESSION_FILE_READER', 'session_reader.pkl')
+            break
+        else:
+            print("Vvedy 1 abo 2!")
+
+    print(f"\nSesiia bude zberezena jak: {session_name}")
 
     print("\n" + "=" * 70)
     print("  VIDKRYVAIU BRAUZER...")
@@ -122,7 +131,7 @@ def manual_login_instagram():
         sessions_dir = current_dir / 'data' / 'sessions'
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        session_file = sessions_dir / f"{account_id}_session.pkl"
+        session_file = sessions_dir / session_name
 
         try:
             cookies = driver.get_cookies()

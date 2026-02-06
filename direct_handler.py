@@ -297,21 +297,30 @@ class DirectHandler:
             logger.error(f"Pomylka obrobky chatu: {e}")
             return False
 
-    def run_inbox_loop(self, check_interval: int = 30):
+    def run_inbox_loop(self, check_interval: int = 30, heartbeat_callback=None):
         """
         Holovnyj tsykl: pereviriaje inbox, obroliaje novi povidomlennia.
 
         Args:
             check_interval: interval perevirky v sekundakh
+            heartbeat_callback: funktsiia dlia onovlennia heartbeat (watchdog)
         """
         logger.info(f"Zapusk inbox loop, interval: {check_interval}s")
 
+        def heartbeat(msg: str = None):
+            if heartbeat_callback:
+                heartbeat_callback(msg)
+
         while True:
             try:
+                heartbeat("Inbox loop iteration")
+
                 # Perekhodym v inbox
                 if not self.go_to_inbox():
                     time.sleep(check_interval)
                     continue
+
+                heartbeat("Get unread chats")
 
                 # Otrymujemo neprocytani chaty
                 chats = self.get_unread_chats()
@@ -321,16 +330,19 @@ class DirectHandler:
                     logger.info(f"Znajdeno {len(unread_chats)} neprocytanykh chativ")
 
                     for chat in unread_chats:
+                        heartbeat(f"Process chat: {chat.get('username', 'unknown')}")
                         self.process_chat(chat['href'])
                         time.sleep(random.uniform(2, 5))  # Pauza mizh chatamy
 
                 # Chekajemo pered nastupnoju perevirkoiu
                 logger.info(f"Chekajemo {check_interval}s...")
+                heartbeat("Waiting for next check")
                 time.sleep(check_interval)
 
             except KeyboardInterrupt:
                 logger.info("Zupynka za zapytom korystuvacha")
-                break
+                raise  # Peredajemo vverh dlia korektnoi obrobky
             except Exception as e:
                 logger.error(f"Pomylka v inbox loop: {e}")
+                heartbeat("Error in loop, retrying")
                 time.sleep(check_interval)

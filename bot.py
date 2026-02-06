@@ -1,6 +1,11 @@
 """
 Instagram AI Agent Bot
 Vkhid cherez cookies (session fajl), perehid v Direct, AI vidpovidi.
+
+Funktsii:
+- Watchdog (heartbeat) - vyjavlennia zavisannja (3 hv tajmaut)
+- Avtoperezapusk - do 3 sprob pry pomylkakh
+- Telegram spovischennia - pro pomylky, sesiju, AI
 """
 import undetected_chromedriver as uc
 import pickle
@@ -12,6 +17,9 @@ import platform
 import subprocess
 import tempfile
 import logging
+import threading
+import shutil
+import psutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -35,6 +43,232 @@ logging.getLogger('selenium').setLevel(logging.WARNING)
 BASE_DIR = Path(__file__).parent
 SESSIONS_DIR = BASE_DIR / 'data' / 'sessions'
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ==================== WATCHDOG (Heartbeat) ====================
+_watchdog_running = False
+_watchdog_thread = None
+_last_heartbeat = time.time()
+WATCHDOG_TIMEOUT_MINUTES = 3  # Tajmaut zavisannia
+
+# Zberihaemo PID Chrome protsesu
+_chrome_pid = None
+_chrome_pids_file = BASE_DIR / 'data' / 'chrome_pids.txt'
+
+# Prefiks dlia nashykh Chrome profiliv
+CHROME_PROFILE_PREFIX = 'chrome_insta_'
+
+
+def heartbeat(operation_name: str = None):
+    """Onovyty heartbeat (povidomyty shcho bot zhyvyj)"""
+    global _last_heartbeat
+    _last_heartbeat = time.time()
+    if operation_name:
+        logger.debug(f"Heartbeat: {operation_name}")
+
+
+def _save_chrome_pid(pid: int):
+    """Zberehty PID Chrome v fajl"""
+    global _chrome_pid
+    _chrome_pid = pid
+    try:
+        _chrome_pids_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(_chrome_pids_file, 'a') as f:
+            f.write(f"{pid}\n")
+        logger.debug(f"Chrome PID zberezeno: {pid}")
+    except Exception as e:
+        logger.warning(f"Ne vdalosja zberehty PID: {e}")
+
+
+def _get_saved_chrome_pids() -> list:
+    """Otrymaty zberezeni PID z fajlu"""
+    pids = []
+    try:
+        if _chrome_pids_file.exists():
+            with open(_chrome_pids_file, 'r') as f:
+                for line in f:
+                    try:
+                        pids.append(int(line.strip()))
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return pids
+
+
+def _clear_chrome_pids_file():
+    """Ochystyty fajl z PID"""
+    try:
+        if _chrome_pids_file.exists():
+            _chrome_pids_file.unlink()
+    except Exception:
+        pass
+
+
+def _kill_process_tree(pid: int):
+    """Vbyty protses i vsi joho dochirni protsesy"""
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+
+        # Spochatku vbyvajemo ditej
+        for child in children:
+            try:
+                child.kill()
+                logger.debug(f"Vbyto dochirni protses: {child.pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Potim batka
+        try:
+            parent.kill()
+            logger.info(f"Vbyto Chrome protses: {pid}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    except psutil.NoSuchProcess:
+        logger.debug(f"Protses {pid} vzhe ne isnuje")
+    except Exception as e:
+        logger.warning(f"Pomylka vbyvstva protsesu {pid}: {e}")
+
+
+def _kill_chrome_by_profile():
+    """Vbyty vsi Chrome protsesy z nashym profilem (chrome_insta_*)"""
+    killed_count = 0
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = proc.info['name'] or ''
+                cmdline = proc.info['cmdline'] or []
+
+                # Pereviriajemo chy tse Chrome/chromedriver
+                if 'chrome' not in name.lower():
+                    continue
+
+                # Pereviriajemo chy ye nash profil v komandnomu riadku
+                cmdline_str = ' '.join(cmdline)
+                if CHROME_PROFILE_PREFIX in cmdline_str:
+                    _kill_process_tree(proc.info['pid'])
+                    killed_count += 1
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+    except Exception as e:
+        logger.warning(f"Pomylka poshuku Chrome protsesiv: {e}")
+
+    return killed_count
+
+
+def _kill_all_chrome():
+    """
+    Vbyty TILKY nashi Chrome protsesy (ne chipaje inshi):
+    1. Po zberezhenomu PID
+    2. Po profileiu chrome_insta_*
+    3. Ochystyty tymchasovi papky
+    """
+    global _chrome_pid
+
+    logger.info("Ochyschennia Chrome protsesiv (tilky nashi)...")
+    killed_total = 0
+
+    # 1. Vbyvajemo po zberezhenomu PID (potochnyj)
+    if _chrome_pid:
+        logger.info(f"Vbyvaju po potochnomu PID: {_chrome_pid}")
+        _kill_process_tree(_chrome_pid)
+        killed_total += 1
+        _chrome_pid = None
+
+    # 2. Vbyvajemo po zberezhenym PID z fajlu (poperedni zapusky)
+    saved_pids = _get_saved_chrome_pids()
+    if saved_pids:
+        logger.info(f"Vbyvaju po zberezhenym PID: {saved_pids}")
+        for pid in saved_pids:
+            _kill_process_tree(pid)
+            killed_total += 1
+
+    # 3. Vbyvajemo po profileiu (garantovano znajde vsi)
+    logger.info(f"Shukaju Chrome protsesy z profilem '{CHROME_PROFILE_PREFIX}*'...")
+    killed_by_profile = _kill_chrome_by_profile()
+    killed_total += killed_by_profile
+
+    # Chekajemo shchob Windows zvilnyv lock-fajly
+    if platform.system() == 'Windows':
+        time.sleep(2)
+
+    # 4. Ochyschuiemo tymchasovi profili
+    temp_dir = tempfile.gettempdir()
+    cleaned_dirs = 0
+    for item in Path(temp_dir).glob(f'{CHROME_PROFILE_PREFIX}*'):
+        try:
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+                cleaned_dirs += 1
+                logger.debug(f"Vydaleno profil: {item}")
+        except Exception:
+            pass
+
+    # 5. Ochyschuiemo fajl z PID
+    _clear_chrome_pids_file()
+
+    logger.info(f"Ochyscheno: {killed_total} protsesiv, {cleaned_dirs} profiliv")
+
+
+def _watchdog_loop():
+    """Tsykl watchdog - pereviryaie chy ne zavisly"""
+    global _watchdog_running, _last_heartbeat
+
+    timeout_seconds = WATCHDOG_TIMEOUT_MINUTES * 60
+
+    while _watchdog_running:
+        time.sleep(30)  # Pereviriajemo kozni 30 sekund
+
+        if not _watchdog_running:
+            break
+
+        elapsed = time.time() - _last_heartbeat
+
+        if elapsed > timeout_seconds:
+            logger.error("=" * 60)
+            logger.error(f"WATCHDOG: TAJMAUT! Operatsiia zavisla na {elapsed/60:.1f} khvylyn!")
+            logger.error("=" * 60)
+            logger.error("Vbyvaju Chrome i perezapuskaju skrypt...")
+
+            # Spovischennia v Telegram
+            try:
+                from telegram_notifier import TelegramNotifier
+                notifier = TelegramNotifier()
+                notifier.notify_error(f"Bot zavis na {elapsed/60:.1f} khv. Perezapusk...")
+            except Exception:
+                pass
+
+            # Vbyvajemo Chrome
+            _kill_all_chrome()
+
+            # Perezapuskajemo skrypt
+            logger.error("Perezapusk skrypta cherez 5 sekund...")
+            time.sleep(5)
+
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
+
+
+def start_watchdog():
+    """Zapustyty watchdog tred"""
+    global _watchdog_running, _watchdog_thread, _last_heartbeat
+
+    _last_heartbeat = time.time()
+    _watchdog_running = True
+
+    _watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True)
+    _watchdog_thread.start()
+
+    logger.info(f"Watchdog zapuscheno (tajmaut: {WATCHDOG_TIMEOUT_MINUTES} khv)")
+
+
+def stop_watchdog():
+    """Zupynyty watchdog"""
+    global _watchdog_running
+    _watchdog_running = False
 
 
 def detect_chrome_version():
@@ -173,7 +407,13 @@ class InstagramBot:
             """
             self.driver.execute_script(stealth_js)
 
-            logger.info("Chrome zapuscheno uspishno (antydetekt)")
+            # Zberigajemo PID Chrome protsesu
+            try:
+                chrome_pid = self.driver.service.process.pid
+                _save_chrome_pid(chrome_pid)
+                logger.info(f"Chrome zapuscheno uspishno (PID: {chrome_pid})")
+            except Exception:
+                logger.info("Chrome zapuscheno uspishno (antydetekt)")
 
         except Exception as e:
             logger.error(f"Pomylka zapusku Chrome: {e}")
@@ -206,12 +446,16 @@ class InstagramBot:
             traceback.print_exc()
             return False
 
-    def load_session(self, account_id):
+    def load_session(self, session_name: str = None):
         """Zavantazhennia cookies z session fajlu."""
-        session_file = SESSIONS_DIR / f"{account_id}_session.pkl"
+        # Vykorystovujemo nazvu z .env abo parametru
+        if session_name is None:
+            session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
+
+        session_file = SESSIONS_DIR / session_name
         if not session_file.exists():
             logger.error(f"Session fajl ne znajdeno: {session_file}")
-            logger.error(f"Stvor jogo cherez login_helper.py dlia akaunta ID={account_id}")
+            logger.error(f"Stvor jogo cherez login_helper.py")
             return False
 
         try:
@@ -233,7 +477,7 @@ class InstagramBot:
             time.sleep(3)
 
             if self.is_logged_in():
-                logger.info(f"Sesiia zavantazhena dlia akaunta ID={account_id}")
+                logger.info(f"Sesiia zavantazhena: {session_name}")
                 return True
             else:
                 logger.error("Cookies zavantazheno, ale login ne projshov")
@@ -292,6 +536,8 @@ class InstagramBot:
 
     def close(self):
         """Zakryttia brauzera ta ochystka."""
+        global _chrome_pid
+
         # Zakryvajemo DB
         if self.db:
             try:
@@ -308,9 +554,11 @@ class InstagramBot:
                 logger.warning(f"Pomylka zakryttia brauzera: {e}")
             self.driver = None
 
+        # Skydajemo PID
+        _chrome_pid = None
+
         if self.temp_profile_dir and Path(self.temp_profile_dir).exists():
             try:
-                import shutil
                 time.sleep(2)
                 shutil.rmtree(self.temp_profile_dir, ignore_errors=True)
                 logger.info("Tymchasovyj profil vydaleno")
@@ -318,76 +566,142 @@ class InstagramBot:
                 logger.warning(f"Ne vdalosja vydalyty profil: {e}")
             self.temp_profile_dir = None
 
-    def run(self, account_id, check_interval: int = 30):
-        """
-        Holovnyj potik: init -> login -> Direct -> AI loop.
-
-        Args:
-            account_id: ID akaunta
-            check_interval: interval perevirky povidomlen (sekundy)
-        """
-        logger.info("=" * 60)
-        logger.info(f"  ZAPUSK INSTAGRAM AI AGENT")
-        logger.info(f"  Account ID: {account_id}")
-        logger.info("=" * 60)
-
+    def _notify_telegram(self, message: str):
+        """Vidpravyty povidomlennia v Telegram pro pomylku"""
         try:
-            # 1. Zapuskajemo brauzer
-            self.init_driver()
-
-            # 2. Zavantazhujemo sesiiu (cookies)
-            if not self.load_session(account_id):
-                logger.error("Vkhid ne vdavsia. Perevir session fajl.")
-                return False
-
-            logger.info("Uspishno zalohineno v Instagram!")
-
-            # 3. Iniitsializujemo AI komponenty
-            if not self.init_ai_components():
-                logger.error("Ne vdalosja iniitsializuvaty AI komponenty")
-                return False
-
-            # 4. Perekhodym v Direct
-            if not self.go_to_direct():
-                logger.error("Ne vdalosja vidkryty Direct.")
-                return False
-
-            logger.info("=" * 60)
-            logger.info("  AI AGENT ZAPUSCHENO!")
-            logger.info(f"  Interval perevirky: {check_interval}s")
-            logger.info("  Ctrl+C dlia zupynky")
-            logger.info("=" * 60)
-
-            # 5. Zapuskajemo tsykl obrobky povidomlen
-            self.direct_handler.run_inbox_loop(check_interval=check_interval)
-
-            return True
-
-        except KeyboardInterrupt:
-            logger.info("Zupynka za zapytom korystuvacha (Ctrl+C)")
-            return True
-
+            from telegram_notifier import TelegramNotifier
+            notifier = TelegramNotifier()
+            notifier.notify_error(message)
         except Exception as e:
-            logger.error(f"Pomylka: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            logger.warning(f"Ne vdalosja vidpravyty v Telegram: {e}")
 
-        finally:
-            self.close()
+    def run(self, session_name: str = None, check_interval: int = 30):
+        """
+        Holovnyj potik z avtoperezapuskom.
+        - Watchdog (3 khv tajmaut)
+        - Do 3 sprob perezapusku
+        - Telegram spovischennia pro pomylky
+        """
+        if session_name is None:
+            session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
+
+        restart_count = 0
+        max_restarts = 3
+
+        # Zapuskajemo watchdog
+        start_watchdog()
+        heartbeat("Start bota")
+
+        while restart_count < max_restarts:
+            try:
+                if restart_count > 0:
+                    logger.info("=" * 60)
+                    logger.info(f"  PEREZAPUSK #{restart_count}")
+                    logger.info("=" * 60)
+                    time.sleep(5)
+
+                logger.info("=" * 60)
+                logger.info(f"  ZAPUSK INSTAGRAM AI AGENT")
+                logger.info(f"  Session: {session_name}")
+                logger.info("=" * 60)
+
+                heartbeat("Init driver")
+
+                # 1. Zapuskajemo brauzer
+                self.init_driver()
+
+                # 2. Zavantazhujemo sesiiu (cookies)
+                heartbeat("Load session")
+                if not self.load_session(session_name):
+                    logger.error("Sesiia ne validna! Perevir session fajl.")
+                    self._notify_telegram(f"Sesiia ne validna: {session_name}\nPotribno perezajty v akkaunt!")
+                    self.close()
+                    _kill_all_chrome()
+                    return False  # Ne perezapuskajemo - potreben ruchnyj login
+
+                logger.info("Uspishno zalohineno v Instagram!")
+                heartbeat("Logged in")
+
+                # 3. Iniitsializujemo AI komponenty
+                if not self.init_ai_components():
+                    logger.error("Ne vdalosja iniitsializuvaty AI komponenty")
+                    self._notify_telegram("Pomylka initsializatsii AI komponentiv!")
+                    raise Exception("AI init failed")
+
+                # 4. Perekhodym v Direct
+                heartbeat("Go to Direct")
+                if not self.go_to_direct():
+                    logger.error("Ne vdalosja vidkryty Direct.")
+                    raise Exception("Direct open failed")
+
+                logger.info("=" * 60)
+                logger.info("  AI AGENT ZAPUSCHENO!")
+                logger.info(f"  Interval perevirky: {check_interval}s")
+                logger.info("  Ctrl+C dlia zupynky")
+                logger.info("=" * 60)
+
+                # 5. Zapuskajemo tsykl obrobky povidomlen
+                heartbeat("Start inbox loop")
+                self.direct_handler.run_inbox_loop(
+                    check_interval=check_interval,
+                    heartbeat_callback=heartbeat
+                )
+
+                # Jakshcho diyshly siudy - uspishne zavershenia
+                restart_count = 0  # Skydajemo lichilnyk
+
+            except KeyboardInterrupt:
+                logger.info("Zupynka za zapytom korystuvacha (Ctrl+C)")
+                self.close()
+                _kill_all_chrome()
+                stop_watchdog()
+                return True
+
+            except Exception as e:
+                logger.error(f"Pomylka: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # Zakryvajemo brauzer
+                self.close()
+
+                # Vbyvajemo VSI Chrome protsesy
+                _kill_all_chrome()
+
+                restart_count += 1
+
+                if restart_count < max_restarts:
+                    logger.info(f"Perezapusk cherez 10 sekund... (sproba {restart_count}/{max_restarts})")
+                    time.sleep(10)
+                    heartbeat("Perezapusk pislia pomylky")
+                    continue
+                else:
+                    break
+
+        # Dosiahnuto limit perezapuskiv
+        if restart_count >= max_restarts:
+            logger.error("=" * 60)
+            logger.error(f"DOSIAHNUTO LIMIT {max_restarts} PEREZAPUSKIV!")
+            logger.error("Shchos serjozno ne tak. Perevir sesiju/internet.")
+            logger.error("=" * 60)
+            self._notify_telegram(f"Bot zupyneno: dosiahnuto limit {max_restarts} perezapuskiv!")
+            _kill_all_chrome()
+
+        stop_watchdog()
+        return False
 
 
 def main():
-    account_id = int(os.getenv('INSTAGRAM_ACCOUNT_ID', 1))
-    check_interval = 30  # sekundy
+    session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
+    check_interval = int(os.getenv('CHECK_INTERVAL_SECONDS', 30))
 
     # Argumenty komanndoho rjadka
-    if '--account' in sys.argv:
+    if '--session' in sys.argv:
         try:
-            idx = sys.argv.index('--account')
-            account_id = int(sys.argv[idx + 1])
+            idx = sys.argv.index('--session')
+            session_name = sys.argv[idx + 1]
         except (ValueError, IndexError):
-            logger.error("Neviernyj ID akaunta")
+            logger.error("Neviernyj nazva sesii")
             return
 
     if '--interval' in sys.argv:
@@ -398,7 +712,7 @@ def main():
             pass
 
     bot = InstagramBot()
-    bot.run(account_id, check_interval=check_interval)
+    bot.run(session_name, check_interval=check_interval)
 
 
 if __name__ == '__main__':
