@@ -1,10 +1,10 @@
 """
-Skript dlia ruchnoho lohinu v Instagram i zberezhennia sesii (cookies).
-Vidkryvaie Chrome, chekaie na ruchnyj login, zberihaje cookies u .pkl fajl.
+Скрипт для ручного логіну в Instagram і збереження сесії (cookies).
+Відкриває Chrome, чекає на ручний логін, зберігає cookies у .pkl файл.
 
-Nazvy sesij:
-- session_writer.pkl - holovnyj akkaunt (vidpovidaje na DM)
-- session_reader.pkl - rezervnyj akkaunt (na majbutnie)
+Назви сесій:
+- session_writer.pkl - головний акаунт (відповідає на DM)
+- session_reader.pkl - резервний акаунт (на майбутнє)
 """
 import undetected_chromedriver as uc
 import pickle
@@ -21,7 +21,7 @@ load_dotenv()
 
 
 def detect_chrome_version():
-    """Vyznachaie versiiu Chrome. Povertaie int abo None."""
+    """Визначає версію Chrome. Повертає int або None."""
     try:
         if platform.system() == 'Windows':
             try:
@@ -55,16 +55,16 @@ def detect_chrome_version():
 
 def manual_login_instagram():
     print("=" * 70)
-    print("  RUCHNYJ LOGIN V INSTAGRAM")
+    print("  РУЧНИЙ ЛОГІН В INSTAGRAM")
     print("=" * 70)
 
-    # Vybir sesii
-    print("\nOber typ sesii:")
-    print("  1 - session_writer.pkl (holovnyj akkaunt)")
-    print("  2 - session_reader.pkl (rezervnyj)")
+    # Вибір сесії
+    print("\nОбери тип сесії:")
+    print("  1 - session_writer.pkl (головний акаунт)")
+    print("  2 - session_reader.pkl (резервний)")
 
     while True:
-        choice = input("\nVybir (1 abo 2): ").strip()
+        choice = input("\nВибір (1 або 2): ").strip()
         if choice == '1':
             session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
             break
@@ -72,62 +72,62 @@ def manual_login_instagram():
             session_name = os.getenv('SESSION_FILE_READER', 'session_reader.pkl')
             break
         else:
-            print("Vvedy 1 abo 2!")
+            print("Введи 1 або 2!")
 
-    print(f"\nSesiia bude zberezena jak: {session_name}")
+    print(f"\nСесія буде збережена як: {session_name}")
 
     print("\n" + "=" * 70)
-    print("  VIDKRYVAIU BRAUZER...")
+    print("  ВІДКРИВАЮ БРАУЗЕР...")
     print("=" * 70)
 
-    # Vyznachaiemo dyrekroriiu proektu
+    # Визначаємо директорію проекту
     if getattr(sys, 'frozen', False):
         current_dir = Path(os.path.dirname(sys.executable))
     else:
         current_dir = Path(__file__).parent
 
-    # Stvorjujemo papku dlia Chrome profiliu
+    # Створюємо папку для Chrome профілю
     profile_dir = current_dir / 'data' / 'chrome_profile'
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    # Zapuskajemo Chrome z profilem
+    # Запускаємо Chrome з профілем
     options = uc.ChromeOptions()
     options.add_argument(f'--user-data-dir={profile_dir}')
     options.add_argument('--window-size=1200,900')
 
-    print(f"\nProfil: {profile_dir}")
+    print(f"\nПрофіль: {profile_dir}")
 
     driver = None
 
     try:
         driver = uc.Chrome(options=options, version_main=detect_chrome_version())
-        print("Chrome zapuscheno")
+        print("Chrome запущено")
 
-        # Perekhodym na storinku lohinu Instagram
-        print("\nPerekhodju na https://www.instagram.com/accounts/login")
+        # Переходимо на сторінку логіну Instagram
+        print("\nПереходжу на https://www.instagram.com/accounts/login")
         driver.get('https://www.instagram.com/accounts/login')
         time.sleep(3)
 
         print("\n" + "=" * 70)
-        print("  OCHIKUVANNIA LOHINU...")
+        print("  ОЧІКУВАННЯ ЛОГІНУ...")
         print("=" * 70)
-        print("\nUvijdy v akkaunt VRUCHNU")
-        print("Pislia uspishnoho vkhodu natysniy ENTER tut")
+        print("\nУвійди в акаунт ВРУЧНУ")
+        print("Після успішного входу натисни ENTER тут")
 
-        input("\nNatysniy ENTER pislia uspishnoho vkhodu...")
+        input("\nНатисни ENTER після успішного входу...")
 
-        # Perevirijajemo chy brauzer shche vidkrytyj
+        # Перевіряємо чи браузер ще відкритий
         try:
             driver.current_url
-            print("\nZberigaju cookies...")
+            print("\nЗберігаю cookies...")
             time.sleep(2)
         except Exception:
-            print("\nBrauzer vzhe zakryto!")
-            print("Ne mozhu zberehty sesiiu!")
-            input("\nNatysniy Enter dlia vykhodu...")
+            print("\nБраузер вже закрито!")
+            print("Не можу зберегти сесію!")
+            input("\nНатисни Enter для виходу...")
             return
 
-        # Stvorjujemo papku sessions
+        # Створюємо папку sessions
         sessions_dir = current_dir / 'data' / 'sessions'
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,44 +136,44 @@ def manual_login_instagram():
         try:
             cookies = driver.get_cookies()
         except Exception:
-            print("Ne vdalosja otrymaty cookies - mozhlyvo brauzer zakryto")
-            input("\nNatysniy Enter dlia vykhodu...")
+            print("Не вдалося отримати cookies - можливо браузер закрито")
+            input("\nНатисни Enter для виходу...")
             return
 
         if len(cookies) > 0:
             with open(session_file, 'wb') as f:
                 pickle.dump(cookies, f)
 
-            print(f"Sesiiu zberezeno: {session_file}")
-            print(f"Zberezeno {len(cookies)} cookies")
+            print(f"Сесію збережено: {session_file}")
+            print(f"Збережено {len(cookies)} cookies")
 
-            # Zakryvajemo brauzer
-            print("\nZakryvaju brauzer...")
+            # Закриваємо браузер
+            print("\nЗакриваю браузер...")
             try:
                 driver.quit()
-                print("Brauzer zakryto")
+                print("Браузер закрито")
             except Exception:
-                print("Brauzer vzhe zakryto")
+                print("Браузер вже закрито")
 
             print("\n" + "=" * 70)
-            print("  HOTOVO!")
+            print("  ГОТОВО!")
             print("=" * 70)
-            print(f"\nFajl sesii: {session_file}")
-            print("Teper mozhna zapuskaty bot.py")
+            print(f"\nФайл сесії: {session_file}")
+            print("Тепер можна запускати bot.py")
 
-            input("\nNatysniy ENTER dlia vykhodu...")
+            input("\nНатисни ENTER для виходу...")
         else:
-            print("Cookies ne znajdeno. Mozhlyvo ty ne zalohinyvsia?")
+            print("Cookies не знайдено. Можливо ти не залогінився?")
 
             try:
                 driver.quit()
             except Exception:
                 pass
 
-            input("\nNatysniy Enter dlia vykhodu...")
+            input("\nНатисни Enter для виходу...")
 
     except Exception as e:
-        print(f"\nPomylka: {e}")
+        print(f"\nПомилка: {e}")
         import traceback
         traceback.print_exc()
 
@@ -183,16 +183,16 @@ def manual_login_instagram():
             except Exception:
                 pass
 
-        input("\nNatysniy Enter dlia vykhodu...")
+        input("\nНатисни Enter для виходу...")
 
 
 if __name__ == '__main__':
     try:
         manual_login_instagram()
     except KeyboardInterrupt:
-        print("\n\nVykhid...")
+        print("\n\nВихід...")
     except Exception as e:
-        print(f"\nKrytychna pomylka: {e}")
+        print(f"\nКритична помилка: {e}")
         import traceback
         traceback.print_exc()
-        input("\nNatysniy Enter dlia vykhodu...")
+        input("\nНатисни Enter для виходу...")

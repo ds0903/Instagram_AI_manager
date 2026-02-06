@@ -1,7 +1,7 @@
 """
-AI Agent - Gemini API integration
-Chytaje prompts.yml, formuje kontekst, vidpravliaje do Gemini
-Integratsija z Google Sheets (baza znan) ta Telegram (eskalatsiia)
+AI Agent - Gemini API інтеграція
+Читає prompts.yml, формує контекст, відправляє до Gemini
+Інтеграція з Google Sheets (база знань) та Telegram (ескалація)
 """
 import os
 import re
@@ -16,16 +16,16 @@ import logging
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Zavantazhujemo prompty z YAML
+# Завантажуємо промпти з YAML
 PROMPTS_FILE = Path(__file__).parent / 'prompts.yml'
 
-# Tryhery dlia eskalatsii (peredacha operatoru)
+# Тригери для ескалації (передача оператору)
 ESCALATION_TRIGGERS = [
-    'menedzher', 'manager', 'operator', 'liudyna', 'ljudyna', 'chelovek',
-    'poklykaty', 'poklychte', 'pozovit', 'pozovite', 'hochu z lydynoiu',
-    'zhyva liudyna', 'zhyva ljudyna', 'real person', 'human',
-    'skarha', 'skarga', 'complaint', 'povernet', 'return', 'refund',
-    'skandal', 'obman', 'shakhraj', 'fraud'
+    'менеджер', 'manager', 'оператор', 'людина', 'человек',
+    'покликати', 'покличте', 'позовіть', 'хочу з людиною',
+    'жива людина', 'real person', 'human',
+    'скарга', 'complaint', 'повернення', 'return', 'refund',
+    'скандал', 'обман', 'шахрай', 'fraud'
 ]
 
 
@@ -38,68 +38,68 @@ class AIAgent:
         self.model = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')
         self.prompts = self._load_prompts()
 
-        # Google Sheets Manager (baza znan)
+        # Google Sheets Manager (база знань)
         self.sheets_manager = None
         self._init_google_sheets()
 
-        # Telegram Notifier (eskalatsiia)
+        # Telegram Notifier (ескалація)
         self.telegram = None
         self._init_telegram()
 
-        logger.info(f"AI Agent iniitsializovano, model: {self.model}")
+        logger.info(f"AI Agent ініціалізовано, модель: {self.model}")
 
     def _init_google_sheets(self):
-        """Iniitsializatsiia Google Sheets Manager."""
+        """Ініціалізація Google Sheets Manager."""
         try:
             from google_sheets import GoogleSheetsManager
             self.sheets_manager = GoogleSheetsManager()
             if self.sheets_manager.connect():
-                logger.info("Google Sheets pidkliucheno")
+                logger.info("Google Sheets підключено")
             else:
-                logger.warning("Google Sheets ne pidkliucheno - bude vykorystano lokalni dani")
+                logger.warning("Google Sheets не підключено - буде використано локальні дані")
                 self.sheets_manager = None
         except Exception as e:
-            logger.warning(f"Google Sheets nedostupnyj: {e}")
+            logger.warning(f"Google Sheets недоступний: {e}")
             self.sheets_manager = None
 
     def _init_telegram(self):
-        """Iniitsializatsiia Telegram Notifier."""
+        """Ініціалізація Telegram Notifier."""
         try:
             from telegram_notifier import TelegramNotifier
             self.telegram = TelegramNotifier()
             if not self.telegram.enabled:
-                logger.warning("Telegram ne nalashtvano")
+                logger.warning("Telegram не налаштовано")
                 self.telegram = None
         except Exception as e:
-            logger.warning(f"Telegram nedostupnyj: {e}")
+            logger.warning(f"Telegram недоступний: {e}")
             self.telegram = None
 
     def _load_prompts(self) -> dict:
-        """Zavantazhennia promptiv z YAML fajlu."""
+        """Завантаження промптів з YAML файлу."""
         try:
             with open(PROMPTS_FILE, 'r', encoding='utf-8') as f:
                 prompts = yaml.safe_load(f)
-            logger.info("Prompty zavantazheno z prompts.yml")
+            logger.info("Промпти завантажено з prompts.yml")
             return prompts
         except Exception as e:
-            logger.error(f"Pomylka zavantazhennia promptiv: {e}")
+            logger.error(f"Помилка завантаження промптів: {e}")
             return {}
 
     def reload_prompts(self):
-        """Perezavantazhennia promptiv (bez restartu)."""
+        """Перезавантаження промптів (без рестарту)."""
         self.prompts = self._load_prompts()
 
     def _build_conversation_context(self, username: str) -> list:
         """
-        Formuvannia kontekstu rozmovy dlia Gemini.
-        Povertaie list types.Content u formati Gemini API.
+        Формування контексту розмови для Gemini.
+        Повертає list types.Content у форматі Gemini API.
         """
-        # Otrymujemo istoriiu rozmovy z DB
+        # Отримуємо історію розмови з DB
         history = self.db.get_conversation_history(username, limit=20)
 
         messages = []
         for msg in history:
-            # Gemini vykorystovuje 'model' zamist 'assistant'
+            # Gemini використовує 'model' замість 'assistant'
             role = 'model' if msg['role'] == 'assistant' else msg['role']
             messages.append(
                 types.Content(
@@ -111,50 +111,50 @@ class AIAgent:
         return messages
 
     def _get_products_context(self, query: str = None) -> str:
-        """Otrymaty kontekst pro tovary dlia promptu (Google Sheets abo DB)."""
-        # Sproba Google Sheets
+        """Отримати контекст про товари для промпту (Google Sheets або DB)."""
+        # Спроба Google Sheets
         if self.sheets_manager:
             try:
                 return self.sheets_manager.get_products_context_for_ai(query)
             except Exception as e:
-                logger.warning(f"Pomylka Google Sheets: {e}")
+                logger.warning(f"Помилка Google Sheets: {e}")
 
-        # Fallback na DB
+        # Fallback на DB
         if query:
             products = self.db.search_products(query)
         else:
             products = []
 
         if not products:
-            return "Baza tovariv: (tovary ne znajdeno za zapytom)"
+            return "База товарів: (товари не знайдено за запитом)"
 
-        products_text = "Dostupni tovary:\n"
+        products_text = "Доступні товари:\n"
         for p in products:
-            products_text += f"- {p['name']}: {p['price']} grn, rozmiry: {p.get('sizes', 'N/A')}, material: {p.get('material', 'N/A')}\n"
+            products_text += f"- {p['name']}: {p['price']} грн, розміри: {p.get('sizes', 'N/A')}, матеріал: {p.get('material', 'N/A')}\n"
 
         return products_text
 
     def _check_escalation(self, message: str) -> bool:
-        """Pereviryty chy potrebujetsja eskalatsiia (peredacha operatoru)."""
+        """Перевірити чи потрібна ескалація (передача оператору)."""
         message_lower = message.lower()
         for trigger in ESCALATION_TRIGGERS:
             if trigger in message_lower:
-                logger.info(f"Znajdeno tryher eskalatsii: '{trigger}'")
+                logger.info(f"Знайдено тригер ескалації: '{trigger}'")
                 return True
         return False
 
     def _check_behavior_rules(self, message: str) -> dict:
-        """Pereviryty pravyla povedinky z Google Sheets."""
+        """Перевірити правила поведінки з Google Sheets."""
         if self.sheets_manager:
             try:
                 return self.sheets_manager.check_triggers(message)
             except Exception as e:
-                logger.warning(f"Pomylka perevirky pravyl: {e}")
+                logger.warning(f"Помилка перевірки правил: {e}")
         return None
 
     def _extract_phone(self, message: str) -> str:
-        """Vytiahuty telefon z povidomlennia."""
-        # Shukajemo ukrainski ta mizhnarodni nomery
+        """Витягнути телефон з повідомлення."""
+        # Шукаємо українські та міжнародні номери
         patterns = [
             r'\+380\d{9}',           # +380XXXXXXXXX
             r'380\d{9}',             # 380XXXXXXXXX
@@ -169,7 +169,7 @@ class AIAgent:
 
     def escalate_to_human(self, username: str, display_name: str,
                           reason: str, last_message: str) -> bool:
-        """Vidpravyty povidomlennia pro eskalatsiiu v Telegram."""
+        """Відправити повідомлення про ескалацію в Telegram."""
         if self.telegram:
             return self.telegram.notify_escalation(
                 username=username,
@@ -177,7 +177,7 @@ class AIAgent:
                 reason=reason,
                 last_message=last_message
             )
-        logger.warning("Telegram ne nalashtvano, eskalatsiia ne vidpravlena")
+        logger.warning("Telegram не налаштовано, ескалація не відправлена")
         return False
 
     def generate_response(self, username: str, user_message: str,
@@ -185,37 +185,37 @@ class AIAgent:
                           message_type: str = 'text',
                           image_data: bytes = None) -> str:
         """
-        Heneratsiya vidpovidi vid AI.
+        Генерація відповіді від AI.
 
         Args:
             username: Instagram username
-            user_message: tekst povidomlennia
-            display_name: imia korystuvacha (jakshcho vidomo)
+            user_message: текст повідомлення
+            display_name: ім'я користувача (якщо відомо)
             message_type: 'text', 'image', 'voice', 'story_reply', 'post_share'
-            image_data: dani zobrazhennia (dlia Vision API)
+            image_data: дані зображення (для Vision API)
 
         Returns:
-            Tekst vidpovidi
+            Текст відповіді
         """
         try:
-            # Systemnyj prompt
+            # Системний промпт
             system_prompt = self.prompts.get('system_prompt', '')
 
-            # Dodajemo kontekst pro tovary (jakshcho ye zapyt)
+            # Додаємо контекст про товари (якщо є запит)
             products_context = self._get_products_context(user_message)
             system_prompt += f"\n\n{products_context}"
 
-            # Dodajemo imia korystuvacha v kontekst
+            # Додаємо ім'я користувача в контекст
             if display_name:
-                system_prompt += f"\n\nImia klienta: {display_name}"
+                system_prompt += f"\n\nІм'я клієнта: {display_name}"
 
-            # Formuujemo istoriiu rozmovy
+            # Формуємо історію розмови
             messages = self._build_conversation_context(username)
 
-            # Dodajemo potochne povidomlennia
+            # Додаємо поточне повідомлення
             if message_type == 'image' and image_data:
-                # Vision API - analiz zobrazhennia
-                text_prompt = user_message or "Shcho tse za tovar? Dopomozhit z vyborom."
+                # Vision API - аналіз зображення
+                text_prompt = user_message or "Що це за товар? Допоможіть з вибором."
                 messages.append(
                     types.Content(
                         role="user",
@@ -231,7 +231,7 @@ class AIAgent:
                     )
                 )
             else:
-                # Zvychajne tekstove povidomlennia
+                # Звичайне текстове повідомлення
                 messages.append(
                     types.Content(
                         role="user",
@@ -239,7 +239,7 @@ class AIAgent:
                     )
                 )
 
-            # Vyklykaemo Gemini API
+            # Викликаємо Gemini API
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=messages,
@@ -249,10 +249,10 @@ class AIAgent:
                 )
             )
 
-            # Otrymujemo tekst vidpovidi
+            # Отримуємо текст відповіді
             assistant_message = response.text
 
-            logger.info(f"Vidpovid zgenerovano dlia {username}: {assistant_message[:50]}...")
+            logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:50]}...")
 
             return assistant_message
 
@@ -260,7 +260,7 @@ class AIAgent:
             error_str = str(e).lower()
             if 'rate limit' in error_str or '429' in error_str:
                 logger.error(f"AI Rate Limit: {e}")
-                self._notify_ai_error(f"Rate Limit (tokeny/zapyty): {e}")
+                self._notify_ai_error(f"Rate Limit (токени/запити): {e}")
             elif 'authentication' in error_str or 'api key' in error_str or '401' in error_str:
                 logger.error(f"AI Auth Error: {e}")
                 self._notify_ai_error(f"Authentication Error (API key): {e}")
@@ -268,17 +268,17 @@ class AIAgent:
                 logger.error(f"AI API Error: {e}")
                 self._notify_ai_error(f"API Error: {e}")
             else:
-                logger.error(f"Pomylka generatsii vidpovidi: {e}")
-                self._notify_ai_error(f"Nevidoma pomylka AI: {e}")
-            return self.prompts.get('fallback', 'Vybachte, stalasja pomylka. Sprobuyte shche raz.')
+                logger.error(f"Помилка генерації відповіді: {e}")
+                self._notify_ai_error(f"Невідома помилка AI: {e}")
+            return self.prompts.get('fallback', 'Вибачте, сталася помилка. Спробуйте ще раз.')
 
     def _notify_ai_error(self, error_msg: str):
-        """Vidpravyty spovischennia pro pomylku AI v Telegram"""
+        """Відправити сповіщення про помилку AI в Telegram"""
         try:
             if self.telegram:
-                self.telegram.notify_error(f"Pomylka AI Agent:\n{error_msg}")
+                self.telegram.notify_error(f"Помилка AI Agent:\n{error_msg}")
         except Exception as e:
-            logger.warning(f"Ne vdalosja vidpravyty spovischennia: {e}")
+            logger.warning(f"Не вдалося відправити сповіщення: {e}")
 
     def process_message(self, username: str, content: str,
                         display_name: str = None,
@@ -286,62 +286,62 @@ class AIAgent:
                         message_timestamp=None,
                         image_data: bytes = None) -> str:
         """
-        Povnyj tsykl obrobky povidomlennia:
-        1. Zberezhennia user message v DB
-        2. Perevirka eskalatsii
-        3. Stvorennia/onovlennia lida
-        4. Generatsiya vidpovidi
-        5. Zberezhennia assistant message v DB
+        Повний цикл обробки повідомлення:
+        1. Збереження user message в DB
+        2. Перевірка ескалації
+        3. Створення/оновлення ліда
+        4. Генерація відповіді
+        5. Збереження assistant message в DB
 
         Returns:
-            Tekst vidpovidi dlia vidpravky
+            Текст відповіді для відправки
         """
-        # 1. Pereviriajemo chy ne obrobleno vzhe
+        # 1. Перевіряємо чи не оброблено вже
         if message_timestamp:
             if self.db.is_message_processed(username, message_timestamp):
-                logger.info(f"Povidomlennia vid {username} vzhe obrobleno, propuskajemo")
+                logger.info(f"Повідомлення від {username} вже оброблено, пропускаємо")
                 return None
 
-        # 2. Zberigajemo povidomlennia korystuvacha
+        # 2. Зберігаємо повідомлення користувача
         user_msg_id = self.db.add_user_message(
             username=username,
             content=content,
             display_name=display_name,
             message_timestamp=message_timestamp
         )
-        logger.info(f"Zberezeno user message id={user_msg_id} vid {username}")
+        logger.info(f"Збережено user message id={user_msg_id} від {username}")
 
-        # 3. Stvorjujemo/onovljujemo lida
+        # 3. Створюємо/оновлюємо ліда
         phone = self._extract_phone(content)
         self.db.create_or_update_lead(
             username=username,
             display_name=display_name,
             phone=phone
         )
-        logger.info(f"Lid onovleno: {username}")
+        logger.info(f"Лід оновлено: {username}")
 
-        # 4. Pereviriajemo eskalatsiiu
+        # 4. Перевіряємо ескалацію
         if self._check_escalation(content):
-            logger.info(f"Eskalatsiia dlia {username}")
+            logger.info(f"Ескалація для {username}")
             self.escalate_to_human(
                 username=username,
                 display_name=display_name,
-                reason="Klient prosyt zviazku z operatorom",
+                reason="Клієнт просить зв'язку з оператором",
                 last_message=content
             )
-            # Vse odno generujemo vidpovid, ale z poperedzhennjam
+            # Все одно генеруємо відповідь, але з попередженням
             escalation_note = self.prompts.get('escalation_response',
-                'Zrozumilo! Peredaju vashe zapytannia nashomu menedzheru. Vin zviazhetsia z vamy najblyzchym chasom.')
+                'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
             response_text = escalation_note
         else:
-            # 5. Pereviriajemo pravyla povedinky (Google Sheets)
+            # 5. Перевіряємо правила поведінки (Google Sheets)
             behavior_rule = self._check_behavior_rules(content)
             if behavior_rule and behavior_rule.get('Відповідь'):
-                # Vykorystovujemo vidpovid z pravyla
+                # Використовуємо відповідь з правила
                 response_text = behavior_rule.get('Відповідь')
-                logger.info(f"Zastosovano pravylo: {behavior_rule.get('Ситуація')}")
+                logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
             else:
-                # 6. Generujemo vidpovid cherez AI
+                # 6. Генеруємо відповідь через AI
                 response_text = self.generate_response(
                     username=username,
                     user_message=content,
@@ -350,19 +350,19 @@ class AIAgent:
                     image_data=image_data
                 )
 
-        # 7. Zberigajemo vidpovid assistenta
+        # 7. Зберігаємо відповідь асистента
         assistant_msg_id = self.db.add_assistant_message(
             username=username,
             content=response_text,
             display_name=display_name,
             answer_id=user_msg_id
         )
-        logger.info(f"Zberezeno assistant message id={assistant_msg_id}")
+        logger.info(f"Збережено assistant message id={assistant_msg_id}")
 
-        # 8. Onovljujemo answer_id v user message
+        # 8. Оновлюємо answer_id в user message
         self.db.update_answer_id(user_msg_id, assistant_msg_id)
 
-        # 9. Spovischennja pro novoho lida (jakshcho tse pershyj kontakt)
+        # 9. Сповіщення про нового ліда (якщо це перший контакт)
         lead = self.db.get_lead(username)
         if lead and lead.get('messages_count') == 1 and self.telegram:
             self.telegram.notify_new_lead(
@@ -375,9 +375,9 @@ class AIAgent:
         return response_text
 
     def get_greeting(self) -> str:
-        """Otrymaty pryvitannia."""
-        return self.prompts.get('greeting', 'Vitaju! Chym mozhu dopomohty?')
+        """Отримати привітання."""
+        return self.prompts.get('greeting', 'Вітаю! Чим можу допомогти?')
 
     def get_prompt(self, key: str) -> str:
-        """Otrymaty prompt za kliuchem."""
+        """Отримати промпт за ключем."""
         return self.prompts.get(key, '')
