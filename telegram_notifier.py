@@ -23,9 +23,9 @@ class TelegramNotifier:
         self.enabled = bool(self.bot_token and self.chat_id)
 
         if self.enabled:
-            logger.info("Telegram Notifier uvimkneno")
+            logger.info("Telegram Notifier увімкнено")
         else:
-            logger.warning("Telegram Notifier vymkneno (nemaje TOKEN abo CHAT_ID)")
+            logger.warning("Telegram Notifier вимкнено (немає TOKEN або CHAT_ID)")
 
     def send_message(self, text: str, parse_mode: str = 'HTML') -> bool:
         """
@@ -39,7 +39,7 @@ class TelegramNotifier:
             bool: True якщо успішно
         """
         if not self.enabled:
-            logger.warning("Telegram ne nalashtvano, povidomlennia ne vidpravleno")
+            logger.warning("Telegram не налаштовано, повідомлення не відправлено")
             return False
 
         try:
@@ -53,14 +53,14 @@ class TelegramNotifier:
             response = requests.post(url, json=payload, timeout=10)
 
             if response.status_code == 200:
-                logger.info("Telegram povidomlennia vidpravleno")
+                logger.info("Telegram повідомлення відправлено")
                 return True
             else:
-                logger.error(f"Telegram error: {response.status_code} - {response.text}")
+                logger.error(f"Telegram помилка: {response.status_code} - {response.text}")
                 return False
 
         except Exception as e:
-            logger.error(f"Pomylka vidpravky v Telegram: {e}")
+            logger.error(f"Помилка відправки в Telegram: {e}")
             return False
 
     def notify_escalation(self, username: str, display_name: str,
@@ -192,29 +192,29 @@ class TelegramNotifier:
 def main():
     """Тест відправки повідомлення"""
     print("=" * 60)
-    print("  TELEGRAM NOTIFIER TEST")
+    print("  ТЕСТ TELEGRAM NOTIFIER")
     print("=" * 60)
 
     notifier = TelegramNotifier()
 
     if not notifier.enabled:
-        print("\n[WARNING] Telegram ne nalashtvano!")
-        print("Dodaj v .env:")
+        print("\n[УВАГА] Telegram не налаштовано!")
+        print("Додай в .env:")
         print("  TELEGRAM_BOT_TOKEN=your_bot_token")
         print("  TELEGRAM_CHAT_ID=your_chat_id")
         return
 
-    print("\nVidpravliaju testove povidomlennia...")
+    print("\nВідправляю тестове повідомлення...")
 
     success = notifier.send_message(
-        "🤖 <b>Test</b>\n\nInstagram AI Agent працює!",
+        "🤖 <b>Тест</b>\n\nInstagram AI Agent працює!",
         parse_mode='HTML'
     )
 
     if success:
-        print("[OK] Povidomlennia vidpravleno!")
+        print("[OK] Повідомлення відправлено!")
     else:
-        print("[ERROR] Ne vdalosja vidpravyty")
+        print("[ПОМИЛКА] Не вдалося відправити")
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 """
 PostgreSQL Database - conversations table
-Struktura jak na skrinshoti: id, username, role, content, created_at, display_name, answer_id, message_timestamp
+Структура: id, username, role, content, created_at, display_name, answer_id, message_timestamp
+Автоматично створює базу даних та таблиці при першому запуску.
 """
 import os
 import psycopg2
@@ -13,14 +14,52 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _ensure_database_exists():
+    """Перевірити та створити базу даних якщо не існує."""
+    db_name = os.getenv('DB_NAME', 'inst_ai_manager')
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_user = os.getenv('DB_USER', 'danil')
+    db_password = os.getenv('DB_PASSWORD', 'danilus15')
+
+    try:
+        # Підключаємось до системної бази postgres
+        conn = psycopg2.connect(
+            host=db_host,
+            port=db_port,
+            dbname='postgres',
+            user=db_user,
+            password=db_password
+        )
+        conn.autocommit = True
+
+        with conn.cursor() as cur:
+            # Перевіряємо чи існує наша база
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+            exists = cur.fetchone()
+
+            if not exists:
+                cur.execute(f'CREATE DATABASE "{db_name}"')
+                logger.info(f"Базу даних '{db_name}' створено")
+            else:
+                logger.debug(f"База даних '{db_name}' вже існує")
+
+        conn.close()
+
+    except Exception as e:
+        logger.error(f"Помилка перевірки/створення бази даних: {e}")
+        raise
+
+
 class Database:
     def __init__(self):
         self.conn = None
+        _ensure_database_exists()
         self.connect()
         self.create_tables()
 
     def connect(self):
-        """Pidkliuchennia do PostgreSQL."""
+        """Підключення до PostgreSQL."""
         try:
             self.conn = psycopg2.connect(
                 host=os.getenv('DB_HOST', 'localhost'),
@@ -30,15 +69,15 @@ class Database:
                 password=os.getenv('DB_PASSWORD', 'danilus15')
             )
             self.conn.autocommit = True
-            logger.info("Pidkliucheno do PostgreSQL")
+            logger.info("Підключено до PostgreSQL")
         except Exception as e:
-            logger.error(f"Pomylka pidkliuchennia do DB: {e}")
+            logger.error(f"Помилка підключення до DB: {e}")
             raise
 
     def create_tables(self):
-        """Stvorennia tablyts (conversations - jak na skrinshoti)."""
+        """Створення таблиць."""
         with self.conn.cursor() as cur:
-            # Conversations - odna tablytsia dlia vsikh povidomlen (user + assistant)
+            # Conversations - одна таблиця для всіх повідомлень (user + assistant)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id SERIAL PRIMARY KEY,
@@ -55,7 +94,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON conversations(created_at);
             """)
 
-            # Products - tovary z bazy znan
+            # Products - товари з бази знань
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id SERIAL PRIMARY KEY,
@@ -73,7 +112,7 @@ class Database:
                 );
             """)
 
-            # Orders - zamovlennia
+            # Orders - замовлення
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id SERIAL PRIMARY KEY,
@@ -91,7 +130,7 @@ class Database:
                 );
             """)
 
-            # Leads - potentsiini klienty
+            # Leads - потенційні клієнти
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS leads (
                     id SERIAL PRIMARY KEY,
@@ -113,7 +152,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
             """)
 
-            logger.info("Tablytsi stvoreno/perevireno")
+            logger.info("Таблиці створено/перевірено")
 
     # ==================== CONVERSATIONS ====================
 
@@ -121,9 +160,9 @@ class Database:
                     display_name: str = None, answer_id: int = None,
                     message_timestamp: datetime = None) -> int:
         """
-        Dodaty povidomlennia v conversations.
-        role: 'user' abo 'assistant'
-        Povertaie ID stvorenoho zapysu.
+        Додати повідомлення в conversations.
+        role: 'user' або 'assistant'
+        Повертає ID створеного запису.
         """
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -137,7 +176,7 @@ class Database:
     def add_user_message(self, username: str, content: str,
                          display_name: str = None,
                          message_timestamp: datetime = None) -> int:
-        """Dodaty povidomlennia vid korystuvacha."""
+        """Додати повідомлення від користувача."""
         return self.add_message(
             username=username,
             role='user',
@@ -149,7 +188,7 @@ class Database:
     def add_assistant_message(self, username: str, content: str,
                               display_name: str = None,
                               answer_id: int = None) -> int:
-        """Dodaty vidpovid assistenta."""
+        """Додати відповідь асистента."""
         return self.add_message(
             username=username,
             role='assistant',
@@ -159,7 +198,7 @@ class Database:
         )
 
     def get_conversation_history(self, username: str, limit: int = 20) -> list:
-        """Otrymaty istoriiu rozmovy z korystuvachem (ostanni N povidomlen)."""
+        """Отримати історію розмови з користувачем (останні N повідомлень)."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT id, username, role, content, created_at, display_name, answer_id, message_timestamp
@@ -169,11 +208,11 @@ class Database:
                 LIMIT %s
             """, (username, limit))
             messages = cur.fetchall()
-            # Povertajemo v khronolohichnomu poriadku
+            # Повертаємо в хронологічному порядку
             return list(reversed(messages))
 
     def get_last_user_message_id(self, username: str) -> int:
-        """Otrymaty ID ostannoho povidomlennia korystuvacha."""
+        """Отримати ID останнього повідомлення користувача."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM conversations
@@ -185,7 +224,7 @@ class Database:
             return result[0] if result else None
 
     def update_answer_id(self, user_message_id: int, assistant_message_id: int):
-        """Onovyty answer_id dlia povidomlennia korystuvacha (zviazok z vidpoviddiu)."""
+        """Оновити answer_id для повідомлення користувача (зв'язок з відповіддю)."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 UPDATE conversations
@@ -194,7 +233,7 @@ class Database:
             """, (assistant_message_id, user_message_id))
 
     def is_message_processed(self, username: str, message_timestamp: datetime) -> bool:
-        """Perevirka chy povidomlennia vzhe obrobleno (za timestamp)."""
+        """Перевірка чи повідомлення вже оброблено (за timestamp)."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM conversations
@@ -206,7 +245,7 @@ class Database:
     # ==================== PRODUCTS ====================
 
     def get_product_by_name(self, name: str) -> dict:
-        """Poshuk tovaru za nazvoiu (chastkove spivpadinnia)."""
+        """Пошук товару за назвою (часткове співпадіння)."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT * FROM products
@@ -216,7 +255,7 @@ class Database:
             return cur.fetchone()
 
     def get_products_by_category(self, category: str) -> list:
-        """Otrymaty tovary za katehoriieiu."""
+        """Отримати товари за категорією."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT * FROM products
@@ -226,7 +265,7 @@ class Database:
             return cur.fetchall()
 
     def search_products(self, query: str) -> list:
-        """Poshuk tovariv za zapytom (nazva, opys, katehoriia)."""
+        """Пошук товарів за запитом (назва, опис, категорія)."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT * FROM products
@@ -243,7 +282,7 @@ class Database:
                     description: str = None, sizes: str = None,
                     colors: str = None, material: str = None,
                     image_url: str = None, related_products: str = None) -> int:
-        """Dodaty novyj tovar."""
+        """Додати новий товар."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO products (name, category, description, price, sizes, colors, material, image_url, related_products)
@@ -258,7 +297,7 @@ class Database:
                      full_name: str = None, phone: str = None,
                      city: str = None, nova_poshta: str = None,
                      products: str = None, total_price: float = None) -> int:
-        """Stvoryty nove zamovlennia."""
+        """Створити нове замовлення."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO orders (username, display_name, full_name, phone, city, nova_poshta, products, total_price)
@@ -268,7 +307,7 @@ class Database:
             return cur.fetchone()[0]
 
     def update_order_status(self, order_id: int, status: str, ttn: str = None):
-        """Onovyty status zamovlennia."""
+        """Оновити статус замовлення."""
         with self.conn.cursor() as cur:
             if ttn:
                 cur.execute("""
@@ -280,7 +319,7 @@ class Database:
                 """, (status, order_id))
 
     def get_user_orders(self, username: str) -> list:
-        """Otrymaty zamovlennia korystuvacha."""
+        """Отримати замовлення користувача."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT * FROM orders
@@ -296,8 +335,8 @@ class Database:
                                city: str = None, interested_products: str = None,
                                notes: str = None) -> int:
         """
-        Stvoryty abo onovyty lida.
-        Jakshcho lid vzhe isnuje - onovyty dani ta zbilshyty lichylnyk povidomlen.
+        Створити або оновити ліда.
+        Якщо лід вже існує - оновити дані та збільшити лічильник повідомлень.
         """
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -317,13 +356,13 @@ class Database:
             return cur.fetchone()[0]
 
     def get_lead(self, username: str) -> dict:
-        """Otrymaty lida za username."""
+        """Отримати ліда за username."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT * FROM leads WHERE username = %s", (username,))
             return cur.fetchone()
 
     def update_lead_status(self, username: str, status: str):
-        """Onovyty status lida (new, contacted, qualified, converted, lost)."""
+        """Оновити статус ліда (new, contacted, qualified, converted, lost)."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 UPDATE leads SET status = %s, last_contact = CURRENT_TIMESTAMP
@@ -331,7 +370,7 @@ class Database:
             """, (status, username))
 
     def update_lead_phone(self, username: str, phone: str):
-        """Onovyty telefon lida."""
+        """Оновити телефон ліда."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 UPDATE leads SET phone = %s, last_contact = CURRENT_TIMESTAMP
@@ -339,7 +378,7 @@ class Database:
             """, (phone, username))
 
     def get_all_leads(self, status: str = None, limit: int = 100) -> list:
-        """Otrymaty vsikh lidiv (z filtrom po statusu)."""
+        """Отримати всіх лідів (з фільтром по статусу)."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             if status:
                 cur.execute("""
@@ -353,28 +392,28 @@ class Database:
             return cur.fetchall()
 
     def close(self):
-        """Zakryty ziednannia."""
+        """Закрити з'єднання."""
         if self.conn:
             self.conn.close()
-            logger.info("Ziednannia z DB zakryto")
+            logger.info("З'єднання з DB закрито")
 
 
 def main():
-    """Zapusk stvorennia/onovlennia tablyt's."""
+    """Запуск створення/оновлення таблиць."""
     print("=" * 60)
-    print("  DATABASE SETUP - inst_ai_manager")
+    print("  НАЛАШТУВАННЯ БАЗИ ДАНИХ - inst_ai_manager")
     print("=" * 60)
 
     try:
         db = Database()
-        print("\n[OK] Pidkliucheno do PostgreSQL")
-        print("[OK] Tablytsi stvoreno/onovleno:")
-        print("     - conversations (povidomlennia user/assistant)")
-        print("     - products (tovary)")
-        print("     - orders (zamovlennia)")
-        print("     - leads (potentsiini klienty)")
+        print("\n[OK] Підключено до PostgreSQL")
+        print("[OK] Таблиці створено/оновлено:")
+        print("     - conversations (повідомлення user/assistant)")
+        print("     - products (товари)")
+        print("     - orders (замовлення)")
+        print("     - leads (потенційні клієнти)")
 
-        # Pokazujemo strukturu tablyt's
+        # Показуємо структуру таблиць
         with db.conn.cursor() as cur:
             # Conversations
             cur.execute("""
@@ -386,7 +425,7 @@ def main():
             columns = cur.fetchall()
 
             print("\n" + "-" * 60)
-            print("  CONVERSATIONS table structure:")
+            print("  Структура таблиці CONVERSATIONS:")
             print("-" * 60)
             for col in columns:
                 nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
@@ -402,7 +441,7 @@ def main():
             columns = cur.fetchall()
 
             print("\n" + "-" * 60)
-            print("  PRODUCTS table structure:")
+            print("  Структура таблиці PRODUCTS:")
             print("-" * 60)
             for col in columns:
                 nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
@@ -418,7 +457,7 @@ def main():
             columns = cur.fetchall()
 
             print("\n" + "-" * 60)
-            print("  ORDERS table structure:")
+            print("  Структура таблиці ORDERS:")
             print("-" * 60)
             for col in columns:
                 nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
@@ -434,47 +473,47 @@ def main():
             columns = cur.fetchall()
 
             print("\n" + "-" * 60)
-            print("  LEADS table structure:")
+            print("  Структура таблиці LEADS:")
             print("-" * 60)
             for col in columns:
                 nullable = "NULL" if col[2] == 'YES' else "NOT NULL"
                 print(f"  {col[0]:<20} {col[1]:<20} {nullable}")
 
-            # Kilkist zapysiv
+            # Кількість записів
             print("\n" + "-" * 60)
-            print("  Statistics:")
+            print("  Статистика:")
             print("-" * 60)
 
             cur.execute("SELECT COUNT(*) FROM conversations")
             count = cur.fetchone()[0]
-            print(f"  conversations: {count} records")
+            print(f"  conversations: {count} записів")
 
             cur.execute("SELECT COUNT(*) FROM products")
             count = cur.fetchone()[0]
-            print(f"  products: {count} records")
+            print(f"  products: {count} записів")
 
             cur.execute("SELECT COUNT(*) FROM orders")
             count = cur.fetchone()[0]
-            print(f"  orders: {count} records")
+            print(f"  orders: {count} записів")
 
             cur.execute("SELECT COUNT(*) FROM leads")
             count = cur.fetchone()[0]
-            print(f"  leads: {count} records")
+            print(f"  leads: {count} записів")
 
         db.close()
 
         print("\n" + "=" * 60)
-        print("  DATABASE READY!")
+        print("  БАЗА ДАНИХ ГОТОВА!")
         print("=" * 60)
 
     except Exception as e:
-        print(f"\n[ERROR] {e}")
+        print(f"\n[ПОМИЛКА] {e}")
         import traceback
         traceback.print_exc()
-        print("\nPerevirte:")
-        print("  1. PostgreSQL zapuscheno")
-        print("  2. Baza 'inst_ai_manager' isnuje")
-        print("  3. .env fajl z pravilnymy credentials")
+        print("\nПеревірте:")
+        print("  1. PostgreSQL запущено")
+        print("  2. .env файл з правильними credentials")
+        print("  3. Користувач має права на створення баз даних")
 
 
 if __name__ == '__main__':

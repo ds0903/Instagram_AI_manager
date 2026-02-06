@@ -55,11 +55,11 @@ class GoogleSheetsManager:
             self.client = gspread.authorize(creds)
             self.spreadsheet = self.client.open_by_url(self.spreadsheet_url)
 
-            logger.info("Pidkliucheno do Google Sheets")
+            logger.info("Підключено до Google Sheets")
             return True
 
         except Exception as e:
-            logger.error(f"Pomylka pidkliuchennia do Google Sheets: {e}")
+            logger.error(f"Помилка підключення до Google Sheets: {e}")
             return False
 
     # ==================== КАТАЛОГ ТОВАРІВ ====================
@@ -88,7 +88,7 @@ class GoogleSheetsManager:
             data = worksheet.get_all_values()
 
             if len(data) < 2:
-                logger.warning("Kataloh porozhnij")
+                logger.warning("Каталог порожній")
                 return []
 
             # Знаходимо рядок з заголовками (може бути не перший)
@@ -101,7 +101,7 @@ class GoogleSheetsManager:
                     break
 
             if not headers:
-                logger.warning("Zaholovky ne znajdeno")
+                logger.warning("Заголовки не знайдено")
                 return []
 
             products = []
@@ -162,11 +162,11 @@ class GoogleSheetsManager:
             if current_product:
                 products.append(current_product)
 
-            logger.info(f"Zavantazheno {len(products)} tovariv")
+            logger.info(f"Завантажено {len(products)} товарів")
             return products
 
         except Exception as e:
-            logger.error(f"Pomylka chytannia katalohu: {e}")
+            logger.error(f"Помилка читання каталогу: {e}")
             return []
 
     def find_product_by_name(self, query: str) -> dict:
@@ -188,10 +188,10 @@ class GoogleSheetsManager:
             category = product.get('Категорія', '').lower()
 
             if query_lower in name or query_lower in artikul or query_lower in category:
-                logger.info(f"Znajdeno tovar: {product.get('Назва')}")
+                logger.info(f"Знайдено товар: {product.get('Назва')}")
                 return product
 
-        logger.info(f"Tovar ne znajdeno: {query}")
+        logger.info(f"Товар не знайдено: {query}")
         return None
 
     def find_products_by_category(self, category: str) -> list:
@@ -213,7 +213,7 @@ class GoogleSheetsManager:
             if category_lower in prod_category:
                 result.append(product)
 
-        logger.info(f"Znajdeno {len(result)} tovariv v kategorii '{category}'")
+        logger.info(f"Знайдено {len(result)} товарів в категорії '{category}'")
         return result
 
     def find_products_by_size(self, size: str) -> list:
@@ -235,7 +235,7 @@ class GoogleSheetsManager:
             if size_lower in sizes:
                 result.append(product)
 
-        logger.info(f"Znajdeno {len(result)} tovariv z rozmirom '{size}'")
+        logger.info(f"Знайдено {len(result)} товарів з розміром '{size}'")
         return result
 
     def get_price_for_size(self, product: dict, size_query: str) -> dict:
@@ -317,11 +317,11 @@ class GoogleSheetsManager:
                     template_text = row[1]
                     templates[template_name] = template_text
 
-            logger.info(f"Zavantazheno {len(templates)} shabloniv")
+            logger.info(f"Завантажено {len(templates)} шаблонів")
             return templates
 
         except Exception as e:
-            logger.error(f"Pomylka chytannia shabloniv: {e}")
+            logger.error(f"Помилка читання шаблонів: {e}")
             return {}
 
     # ==================== ЛОГІКА ПОВЕДІНКИ ====================
@@ -360,11 +360,11 @@ class GoogleSheetsManager:
 
                 rules.append(rule)
 
-            logger.info(f"Zavantazheno {len(rules)} pravyl povedinky")
+            logger.info(f"Завантажено {len(rules)} правил поведінки")
             return rules
 
         except Exception as e:
-            logger.error(f"Pomylka chytannia lohiky: {e}")
+            logger.error(f"Помилка читання логіки: {e}")
             return []
 
     def check_triggers(self, message: str) -> dict:
@@ -384,7 +384,7 @@ class GoogleSheetsManager:
             triggers = rule.get('triggers_list', [])
             for trigger in triggers:
                 if trigger in message_lower:
-                    logger.info(f"Spratsiuvav tryher '{trigger}' dlia sytuatsii '{rule.get('Ситуація')}'")
+                    logger.info(f"Спрацював тригер '{trigger}' для ситуації '{rule.get('Ситуація')}'")
                     return rule
 
         return None
@@ -411,11 +411,11 @@ class GoogleSheetsManager:
                     answer = row[1]
                     questions[question] = answer
 
-            logger.info(f"Zavantazheno {len(questions)} skladnykh pytan")
+            logger.info(f"Завантажено {len(questions)} складних питань")
             return questions
 
         except Exception as e:
-            logger.error(f"Pomylka chytannia skladnykh pytan: {e}")
+            logger.error(f"Помилка читання складних питань: {e}")
             return {}
 
     def find_answer_for_question(self, question: str) -> str:
@@ -433,7 +433,7 @@ class GoogleSheetsManager:
 
         for stored_q, answer in questions.items():
             if question_lower in stored_q or stored_q in question_lower:
-                logger.info(f"Znajdeno vidpovid na pytannia")
+                logger.info(f"Знайдено відповідь на питання")
                 return answer
 
         return None
@@ -460,11 +460,11 @@ class GoogleSheetsManager:
 
             worksheet.append_row([now, f"@{username}", question, context])
 
-            logger.info(f"Nestandartne pytannia zapysano: '{question[:50]}...'")
+            logger.info(f"Нестандартне питання записано: '{question[:50]}...'")
             return True
 
         except Exception as e:
-            logger.error(f"Pomylka zapysu pytannia: {e}")
+            logger.error(f"Помилка запису питання: {e}")
             return False
 
     # ==================== ФОРМУВАННЯ ПОВІДОМЛЕНЬ ====================
@@ -564,7 +564,7 @@ class GoogleSheetsManager:
 def main():
     """Тест підключення та читання даних"""
     print("=" * 60)
-    print("  GOOGLE SHEETS MANAGER TEST")
+    print("  ТЕСТ GOOGLE SHEETS MANAGER")
     print("=" * 60)
 
     gs = GoogleSheetsManager()
@@ -573,72 +573,72 @@ def main():
     print(f"Spreadsheet URL: {gs.spreadsheet_url}")
 
     if not gs.spreadsheet_url:
-        print("\n[ERROR] GOOGLE_SHEET_ID abo GOOGLE_SHEET_URL ne vkazano v .env")
-        print("\nDodaj v .env:")
+        print("\n[ПОМИЛКА] GOOGLE_SHEET_ID або GOOGLE_SHEET_URL не вказано в .env")
+        print("\nДодай в .env:")
         print("  GOOGLE_SHEET_ID=your_spreadsheet_id")
         print("  GOOGLE_SHEETS_CREDENTIALS=credentials.json")
         return
 
     if not Path(gs.credentials_file).exists():
-        print(f"\n[ERROR] Fajl credentials ne znajdeno: {gs.credentials_file}")
-        print("\nStvor service account v Google Cloud Console ta zavantazh JSON")
+        print(f"\n[ПОМИЛКА] Файл credentials не знайдено: {gs.credentials_file}")
+        print("\nСтвори service account в Google Cloud Console та завантаж JSON")
         return
 
-    print("\nPidkliuchajemosj...")
+    print("\nПідключаємось...")
     if not gs.connect():
-        print("[ERROR] Ne vdalosja pidkliuchytysja")
+        print("[ПОМИЛКА] Не вдалося підключитися")
         return
 
-    print("[OK] Pidkliucheno do Google Sheets!")
+    print("[OK] Підключено до Google Sheets!")
 
     # Тестуємо читання
     print("\n" + "-" * 60)
-    print("  KATALOH TOVARIV")
+    print("  КАТАЛОГ ТОВАРІВ")
     print("-" * 60)
 
     products = gs.get_products()
-    print(f"Znajdeno {len(products)} tovariv")
+    print(f"Знайдено {len(products)} товарів")
 
     if products:
-        print("\nTovary:")
+        print("\nТовари:")
         for p in products[:5]:
             name = p.get('Назва', p.get('Назва ', 'N/A'))
             print(f"\n  {name}")
-            print(f"    Material: {p.get('Матеріал', 'N/A')[:50]}...")
-            print(f"    Kolory: {p.get('Кольри', p.get('Кольори', 'N/A'))[:50]}...")
-            print(f"    Suputni: {p.get('Супутні товари', 'N/A')}")
+            print(f"    Матеріал: {p.get('Матеріал', 'N/A')[:50]}...")
+            print(f"    Кольори: {p.get('Кольри', p.get('Кольори', 'N/A'))[:50]}...")
+            print(f"    Супутні: {p.get('Супутні товари', 'N/A')}")
             prices = p.get('prices_by_size', [])
             if prices:
-                print("    Tsiny po rozmiram:")
+                print("    Ціни по розмірам:")
                 for price in prices:
                     print(f"      - {price.get('sizes')}: {price.get('price')}")
 
     print("\n" + "-" * 60)
-    print("  SHABLONY")
+    print("  ШАБЛОНИ")
     print("-" * 60)
 
     templates = gs.get_templates()
-    print(f"Znajdeno {len(templates)} shabloniv")
+    print(f"Знайдено {len(templates)} шаблонів")
 
     if templates:
-        print("\nNazvy shabloniv:")
+        print("\nНазви шаблонів:")
         for name in list(templates.keys())[:5]:
             print(f"  - {name}")
 
     print("\n" + "-" * 60)
-    print("  LOHIKA POVEDINKY")
+    print("  ЛОГІКА ПОВЕДІНКИ")
     print("-" * 60)
 
     rules = gs.get_behavior_rules()
-    print(f"Znajdeno {len(rules)} pravyl")
+    print(f"Знайдено {len(rules)} правил")
 
     if rules:
-        print("\nPershi 3 sytuatsii:")
+        print("\nПерші 3 ситуації:")
         for r in rules[:3]:
-            print(f"  - {r.get('Ситуація', 'N/A')}: tryhery={r.get('triggers_list', [])}")
+            print(f"  - {r.get('Ситуація', 'N/A')}: тригери={r.get('triggers_list', [])}")
 
     print("\n" + "=" * 60)
-    print("  TEST COMPLETE!")
+    print("  ТЕСТ ЗАВЕРШЕНО!")
     print("=" * 60)
 
 
