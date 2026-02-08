@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 class DirectHandler:
     # Всі 3 локації для перевірки непрочитаних чатів
     DM_LOCATIONS = [
-        {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},
-        {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},
+        # {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},  # TODO: розкоментувати після дебагу
+        # {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},  # TODO: розкоментувати після дебагу
         {'url': 'https://www.instagram.com/direct/requests/hidden/', 'name': 'Приховані запити'},
     ]
 
@@ -503,10 +503,10 @@ class DirectHandler:
             logger.error(f"Помилка обробки чату: {e}")
             return False
 
-    def process_chat_by_click(self, chat_info: dict) -> bool:
+    def open_chat_by_click(self, chat_info: dict) -> bool:
         """
-        Обробка чату через клік по елементу (для requests/hidden де немає прямого href).
-        Спочатку повертаємось на сторінку локації, знаходимо елемент заново і клікаємо.
+        Відкрити чат через клік по елементу (для requests/hidden де немає прямого href).
+        Повертаємось на сторінку локації, знаходимо елемент заново і клікаємо.
         """
         try:
             location_url = chat_info.get('location_url')
@@ -541,55 +541,80 @@ class DirectHandler:
                             continue
 
                     # Клікаємо на елемент щоб відкрити чат
+                    logger.info(f"Клікаю на чат: {username}")
                     clickable.click()
-                    time.sleep(2)
+                    time.sleep(3)
 
-                    # Перевіряємо чи є кнопка Accept (запит на переписку)
-                    self.try_accept_request()
-
-                    # Далі стандартна обробка
-                    chat_username = self.get_chat_username()
-                    display_name = self.get_display_name()
-
-                    logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
-
-                    last_message = self.get_last_message()
-                    if not last_message or not last_message.get('is_from_user'):
-                        logger.info(f"Немає нових повідомлень від користувача в {chat_username}")
-                        return False
-
-                    content = last_message['content']
-                    timestamp = last_message.get('timestamp')
-
-                    msg_key = f"{chat_username}:{content[:50]}"
-                    if msg_key in self.processed_messages:
-                        logger.info(f"Повідомлення вже оброблено: {msg_key}")
-                        return False
-
-                    response = self.ai_agent.process_message(
-                        username=chat_username,
-                        content=content,
-                        display_name=display_name,
-                        message_type='text',
-                        message_timestamp=timestamp
-                    )
-
-                    if not response:
-                        return False
-
-                    success = self.send_message(response)
-                    if success:
-                        self.processed_messages.add(msg_key)
-                        logger.info(f"Успішно відповіли {chat_username}")
-
-                    return success
+                    logger.info(f"Чат {username} відкрито через клік")
+                    return True
 
                 except Exception as e:
-                    logger.error(f"Помилка кліку по чату: {e}")
+                    logger.error(f"Помилка кліку по чату {username}: {e}")
                     continue
 
             logger.warning(f"Не знайдено чат {username} для кліку")
             return False
+
+        except Exception as e:
+            logger.error(f"Помилка open_chat_by_click: {e}")
+            return False
+
+    def process_chat_by_click(self, chat_info: dict) -> bool:
+        """
+        Повна обробка чату: відкрити → Accept → AI → відповідь.
+        """
+        try:
+            username = chat_info.get('username', 'unknown')
+
+            # 1. Відкриваємо чат кліком
+            if not self.open_chat_by_click(chat_info):
+                return False
+
+            # 2. Перевіряємо чи є кнопка Accept (запит на переписку)
+            accepted = self.try_accept_request()
+            if accepted:
+                logger.info(f"Accept натиснуто для {username}, чекаємо завантаження...")
+                time.sleep(2)
+
+            # 3. Отримуємо username та display_name
+            chat_username = self.get_chat_username()
+            display_name = self.get_display_name()
+            logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
+
+            # 4. Отримуємо останнє повідомлення
+            last_message = self.get_last_message()
+            if not last_message or not last_message.get('is_from_user'):
+                logger.info(f"Немає нових повідомлень від користувача в {chat_username}")
+                return False
+
+            content = last_message['content']
+            timestamp = last_message.get('timestamp')
+
+            # 5. Перевіряємо чи не оброблено вже
+            msg_key = f"{chat_username}:{content[:50]}"
+            if msg_key in self.processed_messages:
+                logger.info(f"Повідомлення вже оброблено: {msg_key}")
+                return False
+
+            # 6. AI обробка
+            response = self.ai_agent.process_message(
+                username=chat_username,
+                content=content,
+                display_name=display_name,
+                message_type='text',
+                message_timestamp=timestamp
+            )
+
+            if not response:
+                return False
+
+            # 7. Відправка відповіді
+            success = self.send_message(response)
+            if success:
+                self.processed_messages.add(msg_key)
+                logger.info(f"Успішно відповіли {chat_username}")
+
+            return success
 
         except Exception as e:
             logger.error(f"Помилка process_chat_by_click: {e}")
@@ -620,21 +645,21 @@ class DirectHandler:
                 heartbeat(f"Знайдено {len(all_unread)} непрочитаних")
 
                 if all_unread:
-                    logger.info(f"Знайдено {len(all_unread)} непрочитаних чатів у всіх локаціях")
+                    logger.info(f"Знайдено {len(all_unread)} чатів у всіх локаціях")
 
-                    for chat in all_unread:
-                        heartbeat(f"Обробка чату: {chat.get('username', 'unknown')} [{chat.get('location')}]")
-                        logger.info(f"Обробка: {chat['username']} з {chat['location']}")
+                    for i, chat in enumerate(all_unread):
+                        heartbeat(f"Обробка чату {i+1}/{len(all_unread)}: {chat.get('username', 'unknown')} [{chat.get('location')}]")
+                        logger.info(f"Обробка [{i+1}/{len(all_unread)}]: {chat['username']} з {chat['location']}")
 
                         if chat.get('href'):
                             # Є пряме посилання — переходимо по href
                             self.process_chat(chat['href'])
                         else:
-                            # Немає href (requests/hidden) — клікаємо по елементу
+                            # Немає href (requests/hidden) — відкриваємо кліком
                             self.process_chat_by_click(chat)
                         time.sleep(random.uniform(2, 5))  # Пауза між чатами
                 else:
-                    logger.info("Немає непрочитаних чатів у жодній локації")
+                    logger.info("Чатів не знайдено в жодній локації")
 
                 # Чекаємо перед наступною перевіркою
                 logger.info(f"Чекаємо {check_interval}с...")

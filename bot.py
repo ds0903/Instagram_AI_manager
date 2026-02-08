@@ -628,11 +628,11 @@ class InstagramBot:
                     self._notify_telegram("Помилка ініціалізації AI компонентів!")
                     raise Exception("AI init failed")
 
-                # 4. Переходимо в Direct
-                heartbeat("Перехід в Direct")
-                if not self.go_to_direct():
-                    logger.error("Не вдалося відкрити Direct.")
-                    raise Exception("Direct open failed")
+                # 4. Перехід в Direct — не потрібен, бо run_inbox_loop сам переходить на потрібні сторінки
+                # heartbeat("Перехід в Direct")
+                # if not self.go_to_direct():
+                #     logger.error("Не вдалося відкрити Direct.")
+                #     raise Exception("Direct open failed")
 
                 logger.info("=" * 60)
                 logger.info("  AI AGENT ЗАПУЩЕНО!")
