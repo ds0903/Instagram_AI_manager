@@ -33,11 +33,12 @@ class DirectHandler:
             self.driver.get(url)
             time.sleep(3)
 
-            # Чекаємо завантаження саме списку чатів (div[@role='listitem'])
-            # або хоча б контейнера сторінки (якщо чатів немає взагалі)
+            # Чекаємо завантаження чатів — на inbox це role="listitem",
+            # на requests/hidden це role="button" всередині списку
             try:
                 WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//div[@role='listitem']"))
+                    lambda d: d.find_elements(By.XPATH, "//div[@role='listitem']")
+                    or d.find_elements(By.XPATH, "//div[@role='button'][@tabindex='0']")
                 )
             except Exception:
                 # Можливо чатів немає на цій сторінці — це нормально
@@ -55,68 +56,91 @@ class DirectHandler:
 
     def get_unread_chats(self) -> list:
         """
-        Отримати список чатів з непрочитаними повідомленнями на поточній сторінці.
-        Шукаємо по div[@role='listitem'] — це контейнер кожного чату.
-        Непрочитані визначаються по span[data-visualcompletion="ignore"] з текстом "Unread"
-        всередині цього контейнера (НЕ всередині <a>, а в батьківському listitem).
+        Отримати непрочитані чати на поточній сторінці.
+        Стратегія: шукаємо ЗНИЗУ ВГОРУ — спочатку знаходимо span[data-visualcompletion="ignore"]
+        з текстом "Unread", потім піднімаємось до батьківського клікабельного елемента.
+
+        На inbox: контейнер = div[@role='listitem']
+        На requests/hidden: контейнер = div[@role='button']
         """
         chats = []
         try:
-            # Шукаємо ВСІ listitem — це батьківський контейнер кожного чату
-            listitem_elements = self.driver.find_elements(
-                By.XPATH, "//div[@role='listitem']"
+            # Шукаємо ВСІ індикатори непрочитаних на сторінці
+            unread_indicators = self.driver.find_elements(
+                By.XPATH, "//span[@data-visualcompletion='ignore']"
             )
 
-            logger.info(f"Знайдено {len(listitem_elements)} listitem елементів")
+            logger.info(f"Знайдено {len(unread_indicators)} span[data-visualcompletion='ignore']")
 
-            for listitem in listitem_elements:
+            for indicator in unread_indicators:
                 try:
-                    # Шукаємо посилання на чат всередині listitem
-                    try:
-                        link = listitem.find_element(By.XPATH, ".//a[contains(@href, '/direct/t/')]")
-                        href = link.get_attribute('href')
-                    except Exception:
-                        # На сторінках requests може не бути прямого посилання —
-                        # тоді сам listitem є клікабельним
-                        href = None
+                    # Перевіряємо що це саме "Unread" індикатор
+                    inner_text = indicator.text.strip()
+                    if 'unread' not in inner_text.lower():
+                        continue
 
-                    # Отримуємо username/ім'я з чату
-                    username = "unknown"
+                    # Піднімаємось вгору до клікабельного контейнера чату
+                    # Спочатку пробуємо role="button" (requests/hidden),
+                    # потім role="listitem" (inbox)
+                    clickable = None
                     try:
-                        spans = listitem.find_elements(By.XPATH, ".//span")
-                        for span in spans:
-                            text = span.text.strip()
-                            # Пропускаємо службові тексти та порожні
-                            if text and text.lower() != 'unread' and len(text) > 1:
-                                username = text
-                                break
+                        clickable = indicator.find_element(
+                            By.XPATH, "./ancestor::div[@role='button']"
+                        )
                     except Exception:
                         pass
 
-                    # Перевіряємо чи є непрочитані — шукаємо в БАТЬКІВСЬКОМУ listitem
-                    # span[data-visualcompletion="ignore"] з div що містить "Unread"
-                    unread = False
+                    if clickable is None:
+                        try:
+                            clickable = indicator.find_element(
+                                By.XPATH, "./ancestor::div[@role='listitem']"
+                            )
+                        except Exception:
+                            pass
+
+                    if clickable is None:
+                        logger.warning("Знайдено Unread але не знайдено клікабельний контейнер")
+                        continue
+
+                    # Дістаємо username з span[@title] (надійний селектор)
+                    username = "unknown"
                     try:
-                        unread_span = listitem.find_element(
-                            By.XPATH, ".//span[@data-visualcompletion='ignore']"
-                        )
-                        inner_text = unread_span.text.strip()
-                        if 'unread' in inner_text.lower():
-                            unread = True
+                        title_span = clickable.find_element(By.XPATH, ".//span[@title]")
+                        username = title_span.get_attribute('title')
+                    except Exception:
+                        # Фолбек — перший непустий span
+                        try:
+                            spans = clickable.find_elements(By.XPATH, ".//span")
+                            for span in spans:
+                                text = span.text.strip()
+                                if text and text.lower() != 'unread' and len(text) > 1:
+                                    username = text
+                                    break
+                        except Exception:
+                            pass
+
+                    # Шукаємо href якщо є
+                    href = None
+                    try:
+                        link = clickable.find_element(By.XPATH, ".//a[contains(@href, '/direct/')]")
+                        href = link.get_attribute('href')
                     except Exception:
                         pass
 
                     chats.append({
                         'username': username,
                         'href': href,
-                        'element': listitem,
-                        'unread': unread
+                        'element': clickable,
+                        'unread': True
                     })
-                except Exception:
+
+                    logger.info(f"  Непрочитаний чат: {username} (href={href is not None})")
+
+                except Exception as e:
+                    logger.debug(f"Помилка обробки unread індикатора: {e}")
                     continue
 
-            unread_count = sum(1 for c in chats if c['unread'])
-            logger.info(f"Знайдено {len(chats)} чатів, непрочитаних: {unread_count}")
+            logger.info(f"Знайдено {len(chats)} непрочитаних чатів")
             return chats
 
         except Exception as e:
@@ -141,12 +165,11 @@ class DirectHandler:
                 logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                 continue
 
-            chats = self.get_unread_chats()
-            unread_in_location = [c for c in chats if c['unread']]
+            unread_chats = self.get_unread_chats()
 
-            if unread_in_location:
-                logger.info(f"  {name}: знайдено {len(unread_in_location)} непрочитаних")
-                for chat in unread_in_location:
+            if unread_chats:
+                logger.info(f"  {name}: знайдено {len(unread_chats)} непрочитаних")
+                for chat in unread_chats:
                     all_unread.append({
                         'username': chat['username'],
                         'href': chat['href'],
@@ -389,24 +412,32 @@ class DirectHandler:
             if location_url:
                 self.go_to_location(location_url)
 
-            # Знаходимо непрочитані елементи заново (після навігації елементи стають stale)
-            listitem_elements = self.driver.find_elements(By.XPATH, "//div[@role='listitem']")
+            # Знаходимо потрібний чат заново по username через span[@title]
+            # (після навігації старі елементи стають stale)
+            target_spans = self.driver.find_elements(By.XPATH, f"//span[@title='{username}']")
 
-            for listitem in listitem_elements:
+            if not target_spans:
+                logger.warning(f"Не знайдено span[@title='{username}'] на сторінці")
+                return False
+
+            for target_span in target_spans:
                 try:
-                    # Перевіряємо чи це потрібний чат по username
-                    spans = listitem.find_elements(By.XPATH, ".//span")
-                    found_username = False
-                    for span in spans:
-                        if span.text.strip() == username:
-                            found_username = True
-                            break
-
-                    if not found_username:
-                        continue
+                    # Піднімаємось до клікабельного батька
+                    clickable = None
+                    try:
+                        clickable = target_span.find_element(
+                            By.XPATH, "./ancestor::div[@role='button']"
+                        )
+                    except Exception:
+                        try:
+                            clickable = target_span.find_element(
+                                By.XPATH, "./ancestor::div[@role='listitem']"
+                            )
+                        except Exception:
+                            continue
 
                     # Клікаємо на елемент щоб відкрити чат
-                    listitem.click()
+                    clickable.click()
                     time.sleep(2)
 
                     # Далі стандартна обробка
