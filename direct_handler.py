@@ -534,20 +534,32 @@ class DirectHandler:
         return unanswered
 
     def _download_image(self, img_src: str) -> bytes:
-        """Завантажити зображення з Instagram CDN."""
+        """
+        Завантажити зображення з Instagram CDN.
+        Використовує cookies з Selenium сесії (Instagram CDN потребує авторизації).
+        """
         try:
+            # Беремо cookies з браузерної сесії
+            selenium_cookies = self.driver.get_cookies()
+            cookies = {c['name']: c['value'] for c in selenium_cookies}
+
             response = requests.get(
                 img_src,
+                cookies=cookies,
                 headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                   'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                  'Chrome/133.0.0.0 Safari/537.36'
+                                  'Chrome/133.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.instagram.com/',
                 },
                 timeout=15
             )
-            if response.status_code == 200:
+            if response.status_code == 200 and len(response.content) > 2000:
                 logger.info(f"Зображення завантажено: {len(response.content)} байт")
                 return response.content
+            elif response.status_code == 200:
+                logger.warning(f"Зображення занадто маленьке: {len(response.content)} байт (мініатюра?)")
+                return None
             else:
                 logger.warning(f"HTTP {response.status_code} при завантаженні зображення")
                 return None
