@@ -5,6 +5,7 @@ Instagram Direct Handler
 import time
 import random
 import logging
+import requests
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -371,63 +372,130 @@ class DirectHandler:
 
     def get_last_message(self, chat_username: str = None) -> dict:
         """
-        Отримати останнє повідомлення в чаті та визначити відправника.
+        Отримати останнє повідомлення в чаті (текст АБО зображення).
         Використовує <a href="/username"> для визначення повідомлень користувача.
-        Повертає dict з 'content', 'is_from_user', 'element', 'timestamp'.
+        Повертає dict з 'content', 'is_from_user', 'element', 'message_type',
+        'image_src', 'timestamp'.
         """
         if not chat_username:
             chat_username = self.get_chat_username()
 
-        # Шукаємо всі повідомлення
+        all_messages = []
+
+        # === ТЕКСТОВІ ПОВІДОМЛЕННЯ ===
         msg_divs = self.driver.find_elements(
             By.XPATH, "//div[@role='presentation']//div[@dir='auto']"
         )
-
-        # Fallback
         if not msg_divs:
             msg_divs = self.driver.find_elements(
                 By.XPATH, "//span[@dir='auto']//div[@dir='auto']"
             )
 
-        if not msg_divs:
-            logger.warning("Не вдалося знайти повідомлення в чаті")
-            return None
-
-        # Збираємо всі повідомлення з визначенням ролей
-        all_messages = []
         for msg_div in msg_divs:
             text = msg_div.text.strip()
             if not text:
                 continue
-
             is_from_user = self._is_message_from_user(msg_div, chat_username)
-
+            y = msg_div.location.get('y', 0)
             all_messages.append({
                 'content': text,
                 'is_from_user': is_from_user,
                 'element': msg_div,
+                'message_type': 'text',
+                'image_src': None,
+                'y_position': y,
                 'timestamp': datetime.now()
             })
 
+        # === ЗОБРАЖЕННЯ (фото/скріншоти від користувача) ===
+        try:
+            all_imgs = self.driver.find_elements(
+                By.XPATH, "//img[not(@alt='user-profile-picture')]"
+            )
+            for img in all_imgs:
+                try:
+                    src = img.get_attribute('src') or ''
+                    # Тільки Instagram/Meta CDN зображення
+                    if 'cdninstagram' not in src and 'fbcdn' not in src:
+                        continue
+
+                    # Перевіряємо розмір (фільтруємо аватарки, іконки, стікери)
+                    w = int(img.get_attribute('width') or '0')
+                    h = int(img.get_attribute('height') or '0')
+                    if w < 100 or h < 100:
+                        try:
+                            natural = self.driver.execute_script(
+                                "return [arguments[0].naturalWidth, arguments[0].naturalHeight]", img
+                            )
+                            w, h = natural[0], natural[1]
+                        except Exception:
+                            pass
+                    if w < 100 or h < 100:
+                        continue
+
+                    is_from_user = self._is_message_from_user(img, chat_username)
+                    y = img.location.get('y', 0)
+
+                    all_messages.append({
+                        'content': '[Фото]',
+                        'is_from_user': is_from_user,
+                        'element': img,
+                        'message_type': 'image',
+                        'image_src': src,
+                        'y_position': y,
+                        'timestamp': datetime.now()
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"Помилка пошуку зображень: {e}")
+
         if not all_messages:
-            logger.warning("Не знайдено повідомлень з текстом")
+            logger.warning("Не знайдено повідомлень (ні тексту, ні зображень)")
             return None
 
-        # Логуємо всі знайдені повідомлення для дебагу
+        # Сортуємо за Y-позицією (зверху вниз = хронологічний порядок)
+        all_messages.sort(key=lambda m: m['y_position'])
+
+        # Логуємо всі знайдені повідомлення
         for i, msg in enumerate(all_messages):
             role_str = 'USER' if msg['is_from_user'] else 'ASSISTANT'
-            logger.info(f"  [{i+1}] {role_str}: '{msg['content'][:60]}'")
+            type_str = msg['message_type'].upper()
+            logger.info(f"  [{i+1}] {role_str} ({type_str}): '{msg['content'][:60]}'")
 
         # Зберігаємо останнє повідомлення КОРИСТУВАЧА для hover+reply
         last_user_msgs = [m for m in all_messages if m['is_from_user']]
         self._last_user_message_element = last_user_msgs[-1]['element'] if last_user_msgs else None
 
-        # Повертаємо ОСТАННЄ повідомлення (щоб перевірити чи треба відповідати)
+        # Повертаємо ОСТАННЄ повідомлення
         last = all_messages[-1]
         logger.info(f"Останнє повідомлення: '{last['content'][:50]}' "
-                     f"(від {'користувача' if last['is_from_user'] else 'нас'})")
+                     f"(від {'користувача' if last['is_from_user'] else 'нас'}, "
+                     f"тип: {last['message_type']})")
 
         return last
+
+    def _download_image(self, img_src: str) -> bytes:
+        """Завантажити зображення з Instagram CDN."""
+        try:
+            response = requests.get(
+                img_src,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                  'Chrome/133.0.0.0 Safari/537.36'
+                },
+                timeout=15
+            )
+            if response.status_code == 200:
+                logger.info(f"Зображення завантажено: {len(response.content)} байт")
+                return response.content
+            else:
+                logger.warning(f"HTTP {response.status_code} при завантаженні зображення")
+                return None
+        except Exception as e:
+            logger.error(f"Помилка завантаження зображення: {e}")
+            return None
 
     def hover_and_click_reply(self, message_element, chat_username: str = None) -> bool:
         """
@@ -637,7 +705,7 @@ class DirectHandler:
 
             logger.info(f"Обробка чату: {username} ({display_name})")
 
-            # 3. Отримуємо останнє повідомлення (з визначенням ролі через profile link)
+            # 3. Отримуємо останнє повідомлення (текст або зображення)
             last_message = self.get_last_message(chat_username=username)
 
             if not last_message or not last_message.get('is_from_user'):
@@ -646,31 +714,44 @@ class DirectHandler:
 
             content = last_message['content']
             timestamp = last_message.get('timestamp')
+            message_type = last_message.get('message_type', 'text')
+            image_src = last_message.get('image_src')
 
             # 4. Перевіряємо чи не оброблено вже
-            msg_key = f"{username}:{content[:50]}"
+            if message_type == 'image' and image_src:
+                msg_key = f"{username}:img:{image_src[-60:]}"
+            else:
+                msg_key = f"{username}:{content[:50]}"
             if msg_key in self.processed_messages:
                 logger.info(f"Повідомлення вже оброблено: {msg_key}")
                 return False
 
-            # 5. Обробка через AI Agent
+            # 5. Завантажуємо зображення (якщо є)
+            image_data = None
+            if message_type == 'image' and image_src:
+                image_data = self._download_image(image_src)
+                if content == '[Фото]':
+                    content = "Клієнт надіслав фото товару. Що це за товар?"
+
+            # 6. Обробка через AI Agent
             response = self.ai_agent.process_message(
                 username=username,
                 content=content,
                 display_name=display_name,
-                message_type='text',
-                message_timestamp=timestamp
+                message_type=message_type,
+                message_timestamp=timestamp,
+                image_data=image_data
             )
 
             if not response:
                 return False
 
-            # 6. Hover + Reply на повідомлення користувача
+            # 7. Hover + Reply на повідомлення користувача
             msg_element = last_message.get('element') or self._last_user_message_element
             if msg_element:
                 self.hover_and_click_reply(msg_element, chat_username=username)
 
-            # 7. Відправляємо відповідь
+            # 8. Відправляємо відповідь
             success = self.send_message(response)
 
             if success:
@@ -767,7 +848,7 @@ class DirectHandler:
 
             logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
 
-            # 4. Отримуємо останнє повідомлення (з визначенням ролі через profile link)
+            # 4. Отримуємо останнє повідомлення (текст або зображення)
             last_message = self.get_last_message(chat_username=chat_username)
             if not last_message or not last_message.get('is_from_user'):
                 logger.info(f"Немає нових повідомлень від користувача в {chat_username}")
@@ -775,31 +856,44 @@ class DirectHandler:
 
             content = last_message['content']
             timestamp = last_message.get('timestamp')
+            message_type = last_message.get('message_type', 'text')
+            image_src = last_message.get('image_src')
 
             # 5. Перевіряємо чи не оброблено вже
-            msg_key = f"{chat_username}:{content[:50]}"
+            if message_type == 'image' and image_src:
+                msg_key = f"{chat_username}:img:{image_src[-60:]}"
+            else:
+                msg_key = f"{chat_username}:{content[:50]}"
             if msg_key in self.processed_messages:
                 logger.info(f"Повідомлення вже оброблено: {msg_key}")
                 return False
 
-            # 6. AI обробка
+            # 6. Завантажуємо зображення (якщо є)
+            image_data = None
+            if message_type == 'image' and image_src:
+                image_data = self._download_image(image_src)
+                if content == '[Фото]':
+                    content = "Клієнт надіслав фото товару. Що це за товар?"
+
+            # 7. AI обробка
             response = self.ai_agent.process_message(
                 username=chat_username,
                 content=content,
                 display_name=display_name,
-                message_type='text',
-                message_timestamp=timestamp
+                message_type=message_type,
+                message_timestamp=timestamp,
+                image_data=image_data
             )
 
             if not response:
                 return False
 
-            # 7. Hover + Reply на повідомлення користувача
+            # 8. Hover + Reply на повідомлення користувача
             msg_element = last_message.get('element') or self._last_user_message_element
             if msg_element:
                 self.hover_and_click_reply(msg_element, chat_username=chat_username)
 
-            # 8. Відправка відповіді
+            # 9. Відправка відповіді
             success = self.send_message(response)
             if success:
                 self.processed_messages.add(msg_key)
