@@ -54,37 +54,106 @@ class DirectHandler:
         """Перехід в Direct inbox (зворотна сумісність)."""
         return self.go_to_location('https://www.instagram.com/direct/inbox/')
 
-    def get_unread_chats(self) -> list:
-        """
-        Отримати непрочитані чати на поточній сторінці.
-        Стратегія: шукаємо ЗНИЗУ ВГОРУ — спочатку знаходимо span[data-visualcompletion="ignore"]
-        з текстом "Unread", потім піднімаємось до батьківського клікабельного елемента.
+    # def get_unread_chats(self) -> list:
+    #     """
+    #     Отримати непрочитані чати на поточній сторінці.
+    #     Стратегія: шукаємо ЗНИЗУ ВГОРУ — спочатку знаходимо span[data-visualcompletion="ignore"]
+    #     з текстом "Unread", потім піднімаємось до батьківського клікабельного елемента.
+    #
+    #     На inbox: контейнер = div[@role='listitem']
+    #     На requests/hidden: контейнер = div[@role='button']
+    #     """
+    #     chats = []
+    #     try:
+    #         unread_indicators = self.driver.find_elements(
+    #             By.XPATH, "//span[@data-visualcompletion='ignore']"
+    #         )
+    #         logger.info(f"Знайдено {len(unread_indicators)} span[data-visualcompletion='ignore']")
+    #
+    #         for indicator in unread_indicators:
+    #             try:
+    #                 inner_text = indicator.text.strip()
+    #                 if 'unread' not in inner_text.lower():
+    #                     continue
+    #
+    #                 clickable = None
+    #                 try:
+    #                     clickable = indicator.find_element(
+    #                         By.XPATH, "./ancestor::div[@role='button']"
+    #                     )
+    #                 except Exception:
+    #                     pass
+    #                 if clickable is None:
+    #                     try:
+    #                         clickable = indicator.find_element(
+    #                             By.XPATH, "./ancestor::div[@role='listitem']"
+    #                         )
+    #                     except Exception:
+    #                         pass
+    #                 if clickable is None:
+    #                     continue
+    #
+    #                 username = "unknown"
+    #                 try:
+    #                     title_span = clickable.find_element(By.XPATH, ".//span[@title]")
+    #                     username = title_span.get_attribute('title')
+    #                 except Exception:
+    #                     try:
+    #                         spans = clickable.find_elements(By.XPATH, ".//span")
+    #                         for span in spans:
+    #                             text = span.text.strip()
+    #                             if text and text.lower() != 'unread' and len(text) > 1:
+    #                                 username = text
+    #                                 break
+    #                     except Exception:
+    #                         pass
+    #
+    #                 href = None
+    #                 try:
+    #                     link = clickable.find_element(By.XPATH, ".//a[contains(@href, '/direct/')]")
+    #                     href = link.get_attribute('href')
+    #                 except Exception:
+    #                     pass
+    #
+    #                 chats.append({
+    #                     'username': username,
+    #                     'href': href,
+    #                     'element': clickable,
+    #                     'unread': True
+    #                 })
+    #                 logger.info(f"  Непрочитаний чат: {username}")
+    #
+    #             except Exception:
+    #                 continue
+    #
+    #         logger.info(f"Знайдено {len(chats)} непрочитаних чатів")
+    #         return chats
+    #     except Exception as e:
+    #         logger.error(f"Помилка отримання чатів: {e}")
+    #         return []
 
-        На inbox: контейнер = div[@role='listitem']
-        На requests/hidden: контейнер = div[@role='button']
+    def get_all_chats(self) -> list:
+        """
+        [DEBUG] Отримати ВСІ чати на поточній сторінці (не тільки непрочитані).
+        Шукаємо всі span[@title] (ім'я користувача) і піднімаємось до клікабельного контейнера.
         """
         chats = []
         try:
-            # Шукаємо ВСІ індикатори непрочитаних на сторінці
-            unread_indicators = self.driver.find_elements(
-                By.XPATH, "//span[@data-visualcompletion='ignore']"
-            )
+            # Шукаємо всі span з title — це імена користувачів у списку чатів
+            title_spans = self.driver.find_elements(By.XPATH, "//span[@title]")
 
-            logger.info(f"Знайдено {len(unread_indicators)} span[data-visualcompletion='ignore']")
+            logger.info(f"[DEBUG] Знайдено {len(title_spans)} span[@title] на сторінці")
 
-            for indicator in unread_indicators:
+            for title_span in title_spans:
                 try:
-                    # Перевіряємо що це саме "Unread" індикатор
-                    inner_text = indicator.text.strip()
-                    if 'unread' not in inner_text.lower():
+                    username = title_span.get_attribute('title')
+                    if not username or len(username) < 1:
                         continue
 
-                    # Піднімаємось вгору до клікабельного контейнера чату
-                    # Спочатку пробуємо role="button" (requests/hidden),
-                    # потім role="listitem" (inbox)
+                    # Піднімаємось до клікабельного контейнера
                     clickable = None
                     try:
-                        clickable = indicator.find_element(
+                        clickable = title_span.find_element(
                             By.XPATH, "./ancestor::div[@role='button']"
                         )
                     except Exception:
@@ -92,32 +161,14 @@ class DirectHandler:
 
                     if clickable is None:
                         try:
-                            clickable = indicator.find_element(
+                            clickable = title_span.find_element(
                                 By.XPATH, "./ancestor::div[@role='listitem']"
                             )
                         except Exception:
                             pass
 
                     if clickable is None:
-                        logger.warning("Знайдено Unread але не знайдено клікабельний контейнер")
                         continue
-
-                    # Дістаємо username з span[@title] (надійний селектор)
-                    username = "unknown"
-                    try:
-                        title_span = clickable.find_element(By.XPATH, ".//span[@title]")
-                        username = title_span.get_attribute('title')
-                    except Exception:
-                        # Фолбек — перший непустий span
-                        try:
-                            spans = clickable.find_elements(By.XPATH, ".//span")
-                            for span in spans:
-                                text = span.text.strip()
-                                if text and text.lower() != 'unread' and len(text) > 1:
-                                    username = text
-                                    break
-                        except Exception:
-                            pass
 
                     # Шукаємо href якщо є
                     href = None
@@ -131,29 +182,76 @@ class DirectHandler:
                         'username': username,
                         'href': href,
                         'element': clickable,
-                        'unread': True
+                        'unread': True  # В debug режимі вважаємо всі як "нові"
                     })
 
-                    logger.info(f"  Непрочитаний чат: {username} (href={href is not None})")
+                    logger.info(f"  [DEBUG] Чат: {username} (href={href is not None})")
 
-                except Exception as e:
-                    logger.debug(f"Помилка обробки unread індикатора: {e}")
+                except Exception:
                     continue
 
-            logger.info(f"Знайдено {len(chats)} непрочитаних чатів")
+            logger.info(f"[DEBUG] Знайдено {len(chats)} чатів всього")
             return chats
 
         except Exception as e:
             logger.error(f"Помилка отримання чатів: {e}")
             return []
 
+    def try_accept_request(self) -> bool:
+        """
+        Перевірити чи є кнопка Accept (прийняти запит на переписку).
+        Якщо є — натиснути і дочекатись завантаження.
+        """
+        try:
+            # Шукаємо кнопку Accept по тексту
+            accept_buttons = self.driver.find_elements(
+                By.XPATH, "//div[@role='button']//span[text()='Accept'] | //button//span[text()='Accept']"
+            )
+
+            if not accept_buttons:
+                logger.debug("Кнопка Accept не знайдена (це звичайний чат)")
+                return False
+
+            # Піднімаємось до клікабельного батька (role="button" або button)
+            for accept_span in accept_buttons:
+                try:
+                    # Спробуємо знайти батьківський button/div
+                    clickable = None
+                    try:
+                        clickable = accept_span.find_element(
+                            By.XPATH, "./ancestor::div[@role='button']"
+                        )
+                    except Exception:
+                        try:
+                            clickable = accept_span.find_element(
+                                By.XPATH, "./ancestor::button"
+                            )
+                        except Exception:
+                            # Якщо не знайшли батька — клікаємо сам span
+                            clickable = accept_span
+
+                    clickable.click()
+                    logger.info("Натиснуто Accept — запит на переписку прийнято!")
+                    time.sleep(2)
+                    return True
+
+                except Exception as e:
+                    logger.debug(f"Помилка кліку на Accept: {e}")
+                    continue
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Помилка пошуку Accept: {e}")
+            return False
+
     def get_all_unread_chats(self) -> list:
         """
         Обійти всі 3 локації (inbox, requests, hidden requests)
-        і зібрати всі непрочитані чати.
+        і зібрати чати.
         Повертає: [{'username': str, 'href': str, 'element': WebElement, 'location': str, 'location_url': str}]
         """
-        all_unread = []
+        all_chats = []
 
         for location in self.DM_LOCATIONS:
             url = location['url']
@@ -165,12 +263,15 @@ class DirectHandler:
                 logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                 continue
 
-            unread_chats = self.get_unread_chats()
+            # [DEBUG] Використовуємо get_all_chats() — всі чати, не тільки непрочитані
+            # Коли дебаг закінчиться — замінити на get_unread_chats()
+            found_chats = self.get_all_chats()
+            # found_chats = self.get_unread_chats()  # TODO: розкоментувати після дебагу
 
-            if unread_chats:
-                logger.info(f"  {name}: знайдено {len(unread_chats)} непрочитаних")
-                for chat in unread_chats:
-                    all_unread.append({
+            if found_chats:
+                logger.info(f"  {name}: знайдено {len(found_chats)} чатів")
+                for chat in found_chats:
+                    all_chats.append({
                         'username': chat['username'],
                         'href': chat['href'],
                         'element': chat['element'],
@@ -178,12 +279,12 @@ class DirectHandler:
                         'location_url': url,
                     })
             else:
-                logger.info(f"  {name}: немає непрочитаних")
+                logger.info(f"  {name}: чатів не знайдено")
 
             time.sleep(random.uniform(1, 2))
 
-        logger.info(f"Всього непрочитаних чатів у всіх локаціях: {len(all_unread)}")
-        return all_unread
+        logger.info(f"[DEBUG] Всього чатів у всіх локаціях: {len(all_chats)}")
+        return all_chats
 
     def open_chat(self, chat_href: str) -> bool:
         """Відкрити конкретний чат."""
@@ -352,6 +453,9 @@ class DirectHandler:
 
             time.sleep(1)
 
+            # 1.5. Перевіряємо чи є кнопка Accept (запит на переписку)
+            self.try_accept_request()
+
             # 2. Отримуємо username та display_name
             username = self.get_chat_username()
             display_name = self.get_display_name()
@@ -439,6 +543,9 @@ class DirectHandler:
                     # Клікаємо на елемент щоб відкрити чат
                     clickable.click()
                     time.sleep(2)
+
+                    # Перевіряємо чи є кнопка Accept (запит на переписку)
+                    self.try_accept_request()
 
                     # Далі стандартна обробка
                     chat_username = self.get_chat_username()
