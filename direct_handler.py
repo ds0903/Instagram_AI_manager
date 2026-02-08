@@ -439,15 +439,22 @@ class DirectHandler:
             })
 
         # === ЗОБРАЖЕННЯ (фото/скріншоти всередині повідомлень) ===
+        # Шукаємо ВСІ img на сторінці (фото можуть бути поза div[@role='presentation'])
+        # Фільтруємо по CDN URL, розміру, виключаємо аватарки
         try:
-            pres_imgs = self.driver.find_elements(
+            all_page_imgs = self.driver.find_elements(
                 By.XPATH,
-                "//div[@role='presentation']//img[not(@alt='user-profile-picture')]"
+                "//img[not(@alt='user-profile-picture')]"
             )
-            for img in pres_imgs:
+            logger.info(f"📷 Пошук зображень: знайдено {len(all_page_imgs)} img на сторінці")
+            for img in all_page_imgs:
                 try:
                     src = img.get_attribute('src') or ''
+                    # Тільки CDN зображення Instagram/Facebook
                     if 'cdninstagram' not in src and 'fbcdn' not in src:
+                        continue
+                    # Фільтр: профільні фото (t51.2885-19) — НЕ фото з чату
+                    if '/t51.2885-19/' in src:
                         continue
                     w = int(img.get_attribute('width') or '0')
                     h = int(img.get_attribute('height') or '0')
@@ -462,6 +469,7 @@ class DirectHandler:
                     if w < 100 or h < 100:
                         continue
 
+                    logger.info(f"📷 Знайдено фото в чаті: {w}x{h}, src={src[:80]}...")
                     is_from_user = self._is_message_from_user(img, chat_username)
                     y = img.location.get('y', 0)
                     all_messages.append({
@@ -545,41 +553,50 @@ class DirectHandler:
         # === Спосіб 1: Клік → full-size viewer → скріншот ===
         if img_element:
             try:
-                logger.info("Клік на зображення для відкриття full-size viewer...")
-                img_element.click()
+                # Знаходимо клікабельний батьківський div[role='button'] для зображення
+                try:
+                    click_target = img_element.find_element(
+                        By.XPATH, "./ancestor::div[@role='button']"
+                    )
+                    logger.info("Клік на div[role='button'] батька зображення...")
+                except Exception:
+                    click_target = img_element
+                    logger.info("Клік на сам img елемент...")
+
+                click_target.click()
                 time.sleep(2)
 
-                # Шукаємо велике зображення в модальному вікні / overlay
+                # Шукаємо НАЙБІЛЬШЕ CDN-зображення на сторінці (viewer показує його великим)
                 fullsize_img = None
-                # Instagram відкриває фото в overlay з великим <img>
-                # Пробуємо різні селектори
-                selectors = [
-                    "div[role='dialog'] img",
-                    "div[style*='position: fixed'] img",
-                    "div[style*='z-index'] img[style*='object-fit']",
-                    "div[role='dialog'] img[style*='object-fit']",
-                ]
-                for selector in selectors:
+                all_imgs = self.driver.find_elements(By.TAG_NAME, 'img')
+                best_img = None
+                best_area = 0
+
+                for img in all_imgs:
                     try:
-                        imgs = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        for img in imgs:
-                            src = img.get_attribute('src') or ''
-                            if 'cdninstagram' in src or 'fbcdn' in src:
-                                # Перевіряємо розмір — нам потрібне ВЕЛИКЕ зображення
-                                natural = self.driver.execute_script(
-                                    "return [arguments[0].naturalWidth, arguments[0].naturalHeight, "
-                                    "arguments[0].getBoundingClientRect().width, "
-                                    "arguments[0].getBoundingClientRect().height]", img
-                                )
-                                nat_w, nat_h, disp_w, disp_h = natural
-                                logger.info(f"Full-size img: natural={nat_w}x{nat_h}, display={disp_w:.0f}x{disp_h:.0f}")
-                                if disp_w > 200 or nat_w > 400:
-                                    fullsize_img = img
-                                    break
-                        if fullsize_img:
-                            break
+                        src = img.get_attribute('src') or ''
+                        if 'cdninstagram' not in src and 'fbcdn' not in src:
+                            continue
+                        # Пропускаємо профільні фото
+                        if '/t51.2885-19/' in src:
+                            continue
+                        dims = self.driver.execute_script(
+                            "var r = arguments[0].getBoundingClientRect();"
+                            "return [r.width, r.height, arguments[0].naturalWidth, arguments[0].naturalHeight]",
+                            img
+                        )
+                        disp_w, disp_h, nat_w, nat_h = dims
+                        area = disp_w * disp_h
+                        logger.info(f"  img: display={disp_w:.0f}x{disp_h:.0f}, natural={nat_w}x{nat_h}, src={src[:60]}...")
+                        if area > best_area:
+                            best_area = area
+                            best_img = img
                     except Exception:
                         continue
+
+                if best_img and best_area > 90000:  # мінімум ~300x300
+                    fullsize_img = best_img
+                    logger.info(f"Full-size знайдено: area={best_area:.0f}px²")
 
                 if fullsize_img:
                     # Скріншот великого зображення
