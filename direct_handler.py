@@ -432,61 +432,86 @@ class DirectHandler:
     def hover_and_click_reply(self, message_element, chat_username: str = None) -> bool:
         """
         Навести мишку на повідомлення користувача і натиснути кнопку Reply.
-        Кнопка з'являється при hover.
+        Кнопки (реакція, відповісти, поділитися) з'являються при hover
+        в контейнері div[style*='--x-width: 96px'] поруч з повідомленням.
+        Reply — це 2-га кнопка (span з svg).
         """
         try:
-            # Піднімаємось до div[@role='presentation'] для hover
+            # Піднімаємось вище — до контейнера всього повідомлення (з аватаром і toolbar)
             hover_target = message_element
             try:
-                parent = message_element.find_element(
-                    By.XPATH, "./ancestor::div[@role='presentation']"
-                )
-                if parent:
-                    hover_target = parent
+                # Від div[@dir='auto'] піднімаємось до великого контейнера повідомлення
+                # Шукаємо предка, який містить toolbar div[style*='--x-width: 96px']
+                hover_target = self.driver.execute_script("""
+                    var el = arguments[0];
+                    var current = el;
+                    for (var i = 0; i < 10; i++) {
+                        current = current.parentElement;
+                        if (!current) break;
+                        var toolbar = current.querySelector('div[style*="--x-width: 96px"]');
+                        if (toolbar) return current;
+                    }
+                    return el;
+                """, message_element)
             except Exception:
                 pass
 
-            # Hover
+            # Hover на контейнер повідомлення
             logger.info("Наводимо мишку на повідомлення для Reply...")
             actions = ActionChains(self.driver)
             actions.move_to_element(hover_target).perform()
-            time.sleep(1.5)
+            time.sleep(2)
 
-            # Шукаємо кнопку Reply
             reply_btn = None
 
-            # Спосіб 1: aria-label="Reply"
+            # Спосіб 1: Знаходимо toolbar контейнер (div[style*='--x-width: 96px'])
+            # і шукаємо кнопки (span з svg) всередині
             try:
-                reply_btn = self.driver.find_element(
-                    By.XPATH, "//*[@aria-label='Reply' and @role='button']"
+                toolbars = self.driver.find_elements(
+                    By.CSS_SELECTOR, "div[style*='--x-width: 96px']"
                 )
-            except Exception:
-                pass
-
-            # Спосіб 2: aria-label містить "Reply"
-            if not reply_btn:
-                try:
-                    reply_btn = self.driver.find_element(
-                        By.XPATH, "//*[contains(@aria-label, 'Reply') and @role='button']"
+                for toolbar in toolbars:
+                    # Шукаємо елементи з SVG (це іконки кнопок)
+                    buttons = toolbar.find_elements(By.XPATH,
+                        ".//*[local-name()='svg']/ancestor::span[1] | "
+                        ".//*[local-name()='svg']/ancestor::div[@role='button'][1] | "
+                        ".//*[local-name()='svg']/ancestor::span[@role='button'][1]"
                     )
-                except Exception:
-                    pass
+                    if not buttons:
+                        # Fallback: будь-які span або div що містять svg
+                        buttons = toolbar.find_elements(By.XPATH,
+                            ".//*[.//*[local-name()='svg']]"
+                        )
+                    if buttons:
+                        logger.info(f"Toolbar знайдено з {len(buttons)} кнопками")
+                        # Reply — 2-га кнопка: [emoji/реакція, reply/відповісти, more/поділитися]
+                        if len(buttons) >= 2:
+                            reply_btn = buttons[1]
+                            logger.info(f"Reply кнопка знайдена (позиція 2 з {len(buttons)})")
+                        break
+            except Exception as e:
+                logger.info(f"Toolbar пошук: {e}")
 
-            # Спосіб 3: aria-label містить "Ответ" (російська локалізація)
+            # Спосіб 2: aria-label (без role='button')
             if not reply_btn:
-                try:
-                    reply_btn = self.driver.find_element(
-                        By.XPATH, "//*[contains(@aria-label, 'Ответ') and @role='button']"
-                    )
-                except Exception:
-                    pass
+                for label in ['Reply', 'reply', 'Ответ', 'Відповісти']:
+                    try:
+                        reply_btn = self.driver.find_element(
+                            By.XPATH, f"//*[contains(@aria-label, '{label}')]"
+                        )
+                        if reply_btn:
+                            logger.info(f"Reply знайдено по aria-label '{label}'")
+                            break
+                    except Exception:
+                        continue
 
-            # Спосіб 4: aria-label містить username (tooltip "Ответьте на сообщение от {user}")
+            # Спосіб 3: title атрибут
             if not reply_btn and chat_username:
                 try:
                     reply_btn = self.driver.find_element(
-                        By.XPATH, f"//*[contains(@aria-label, '{chat_username}') and @role='button']"
+                        By.XPATH, f"//*[contains(@title, '{chat_username}')]"
                     )
+                    logger.info(f"Reply знайдено по title з username")
                 except Exception:
                     pass
 
