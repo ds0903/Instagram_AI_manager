@@ -2,12 +2,16 @@
 Instagram Direct Handler
 Читання та відправка повідомлень в Direct через Selenium
 """
+import os
 import time
 import random
 import logging
 import requests
 from datetime import datetime
+from dotenv import load_dotenv
 from selenium.webdriver.common.by import By
+
+load_dotenv()
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
@@ -32,6 +36,12 @@ class DirectHandler:
         self.ai_agent = ai_agent
         self.processed_messages = set()  # Вже оброблені повідомлення
         self._last_user_message_element = None  # Елемент останнього повідомлення користувача (для hover+reply)
+        # Наш username акаунта (для визначення де чиє повідомлення)
+        self.bot_username = os.getenv('BOT_USERNAME', '').strip().lower()
+        if self.bot_username:
+            logger.info(f"BOT_USERNAME: {self.bot_username}")
+        else:
+            logger.warning("BOT_USERNAME не вказано в .env! Визначення ролей може бути неточним.")
 
     def go_to_location(self, url: str) -> bool:
         """Перехід на конкретну сторінку Direct (inbox/requests/hidden)."""
@@ -335,47 +345,68 @@ class DirectHandler:
 
     def _is_message_from_user(self, msg_element, chat_username: str) -> bool:
         """
-        Визначити чи повідомлення від користувача через <a href="/username">.
-        Піднімаємось по DOM від елемента повідомлення і шукаємо profile link.
-        Якщо знайшли <a href="/username"> — це повідомлення користувача.
-        Якщо не знайшли — це наше повідомлення (assistant).
+        Визначити чи повідомлення від користувача.
+
+        Стратегія (2 рівні):
+        1. Profile link: <a href="/username"> в предках
+           - href = BOT_USERNAME → наше (False)
+           - href = інший → користувач (True)
+        2. Fallback: X-позиція елемента
+           - Зліва → користувач (True), Справа → наше (False)
+           (В Instagram DM: чужі повідомлення зліва, свої справа)
         """
         try:
             return self.driver.execute_script("""
                 var msg = arguments[0];
-                var username = arguments[1].toLowerCase();
+                var botUsername = arguments[1];
 
+                // === СТРАТЕГІЯ 1: Profile link ===
                 var current = msg;
-                for (var i = 0; i < 12; i++) {
+                for (var i = 0; i < 8; i++) {
                     current = current.parentElement;
                     if (!current || current === document.body) break;
 
-                    // Зупиняємось на великих контейнерах
                     var role = current.getAttribute('role');
                     if (role === 'grid' || role === 'main' ||
                         current.tagName === 'MAIN' || current.tagName === 'SECTION') {
                         break;
                     }
 
-                    // Шукаємо profile link
+                    var presentations = current.querySelectorAll('div[role="presentation"]');
+                    if (presentations.length > 4) break;
+
                     var link = current.querySelector('a[aria-label^="Open the profile page"]');
                     if (link) {
                         var href = (link.getAttribute('href') || '').toLowerCase();
-                        return href.includes('/' + username);
+                        if (botUsername && href.includes('/' + botUsername)) {
+                            return false;  // наш профіль → наше повідомлення
+                        }
+                        return true;  // інший профіль → користувач
                     }
                 }
-                return false;
-            """, msg_element, chat_username)
+
+                // === СТРАТЕГІЯ 2: X-позиція (fallback) ===
+                // В Instagram DM: повідомлення клієнта зліва, наші справа
+                var rect = msg.getBoundingClientRect();
+                var chatContainer = document.querySelector('div[role="grid"]')
+                                 || document.querySelector('main')
+                                 || document.documentElement;
+                var containerRect = chatContainer.getBoundingClientRect();
+                var containerCenter = containerRect.left + containerRect.width / 2;
+                var msgCenter = rect.left + rect.width / 2;
+
+                // Якщо центр повідомлення лівіше за центр контейнера → користувач
+                return msgCenter < containerCenter;
+            """, msg_element, self.bot_username)
         except Exception as e:
             logger.error(f"Помилка визначення відправника: {e}")
             return False
 
-    def get_last_message(self, chat_username: str = None) -> dict:
+    def get_user_messages(self, chat_username: str = None) -> list:
         """
-        Отримати останнє повідомлення в чаті (текст АБО зображення).
-        Використовує <a href="/username"> для визначення повідомлень користувача.
-        Повертає dict з 'content', 'is_from_user', 'element', 'message_type',
-        'image_src', 'timestamp'.
+        Отримати ВСІ повідомлення КОРИСТУВАЧА з відкритого чату (текст + зображення).
+        Повертає list dicts відсортований за Y-позицією (хронологічний порядок).
+        Кожен dict: {content, element, message_type, image_src, y_position, timestamp}
         """
         if not chat_username:
             chat_username = self.get_chat_username()
@@ -407,19 +438,17 @@ class DirectHandler:
                 'timestamp': datetime.now()
             })
 
-        # === ЗОБРАЖЕННЯ (фото/скріншоти від користувача) ===
+        # === ЗОБРАЖЕННЯ (фото/скріншоти всередині повідомлень) ===
         try:
-            all_imgs = self.driver.find_elements(
-                By.XPATH, "//img[not(@alt='user-profile-picture')]"
+            pres_imgs = self.driver.find_elements(
+                By.XPATH,
+                "//div[@role='presentation']//img[not(@alt='user-profile-picture')]"
             )
-            for img in all_imgs:
+            for img in pres_imgs:
                 try:
                     src = img.get_attribute('src') or ''
-                    # Тільки Instagram/Meta CDN зображення
                     if 'cdninstagram' not in src and 'fbcdn' not in src:
                         continue
-
-                    # Перевіряємо розмір (фільтруємо аватарки, іконки, стікери)
                     w = int(img.get_attribute('width') or '0')
                     h = int(img.get_attribute('height') or '0')
                     if w < 100 or h < 100:
@@ -435,7 +464,6 @@ class DirectHandler:
 
                     is_from_user = self._is_message_from_user(img, chat_username)
                     y = img.location.get('y', 0)
-
                     all_messages.append({
                         'content': '[Фото]',
                         'is_from_user': is_from_user,
@@ -451,29 +479,59 @@ class DirectHandler:
             logger.warning(f"Помилка пошуку зображень: {e}")
 
         if not all_messages:
-            logger.warning("Не знайдено повідомлень (ні тексту, ні зображень)")
-            return None
+            logger.warning("Не знайдено повідомлень в чаті")
+            return []
 
-        # Сортуємо за Y-позицією (зверху вниз = хронологічний порядок)
+        # Сортуємо за Y-позицією (хронологічний порядок)
         all_messages.sort(key=lambda m: m['y_position'])
 
-        # Логуємо всі знайдені повідомлення
+        # Логуємо ВСІ повідомлення
         for i, msg in enumerate(all_messages):
             role_str = 'USER' if msg['is_from_user'] else 'ASSISTANT'
             type_str = msg['message_type'].upper()
             logger.info(f"  [{i+1}] {role_str} ({type_str}): '{msg['content'][:60]}'")
 
-        # Зберігаємо останнє повідомлення КОРИСТУВАЧА для hover+reply
-        last_user_msgs = [m for m in all_messages if m['is_from_user']]
-        self._last_user_message_element = last_user_msgs[-1]['element'] if last_user_msgs else None
+        # Фільтруємо тільки повідомлення КОРИСТУВАЧА
+        user_messages = [m for m in all_messages if m['is_from_user']]
 
-        # Повертаємо ОСТАННЄ повідомлення
-        last = all_messages[-1]
-        logger.info(f"Останнє повідомлення: '{last['content'][:50]}' "
-                     f"(від {'користувача' if last['is_from_user'] else 'нас'}, "
-                     f"тип: {last['message_type']})")
+        # Зберігаємо елемент останнього повідомлення для hover+reply
+        self._last_user_message_element = user_messages[-1]['element'] if user_messages else None
 
-        return last
+        if not user_messages:
+            logger.warning("Не знайдено жодного повідомлення від користувача")
+            return []
+
+        logger.info(f"Знайдено {len(user_messages)} повідомлень від користувача")
+        return user_messages
+
+    def _filter_unanswered(self, screen_messages: list, username: str) -> list:
+        """
+        Фільтрація: залишити тільки НЕВІДПОВІДЖЕНІ повідомлення.
+        Перевіряємо кожне повідомлення з екрану проти БД:
+        - Якщо content збігається і answer_id НЕ NULL → вже відповіли (пропускаємо)
+        - Якщо content не знайдено в БД або answer_id NULL → невідповіджене
+        (Логіка 1:1 з Dia_Travel_AI)
+        """
+        db_history = self.ai_agent.db.get_conversation_history(username, limit=50)
+
+        unanswered = []
+        for msg in screen_messages:
+            already_answered = False
+
+            for db_msg in db_history:
+                if db_msg['role'] != 'user':
+                    continue
+                if db_msg['content'] != msg['content']:
+                    continue
+                # Content збігається — перевіряємо answer_id
+                if db_msg.get('answer_id'):
+                    already_answered = True
+                break
+
+            if not already_answered:
+                unanswered.append(msg)
+
+        return unanswered
 
     def _download_image(self, img_src: str) -> bytes:
         """Завантажити зображення з Instagram CDN."""
@@ -680,85 +738,168 @@ class DirectHandler:
             pass
         return None
 
-    def process_chat(self, chat_href: str) -> bool:
+    def _process_opened_chat(self, username: str, display_name: str) -> bool:
         """
-        Обробка одного чату:
-        1. Відкрити чат
-        2. Прочитати останнє повідомлення (з визначенням відправника через href)
-        3. Hover + Reply на повідомлення користувача
-        4. Згенерувати відповідь через AI
-        5. Відправити відповідь
+        Обробка вже відкритого чату (спільна логіка).
+        Алгоритм (як Dia_Travel):
+        1. Читаємо ВСІ повідомлення користувача з екрану
+        2. Перевіряємо БД: які вже мають answer_id (відповідь)
+        3. Фільтруємо — залишаємо тільки НЕВІДПОВІДЖЕНІ
+        4. Об'єднуємо тексти невідповіджених
+        5. Зберігаємо КОЖНЕ повідомлення окремо в БД
+        6. Генеруємо ОДНУ відповідь AI
+        7. Зберігаємо відповідь і зв'язуємо ВСІ повідомлення з нею (answer_id)
+        8. Hover + Reply + відправка
         """
         try:
-            # 1. Відкриваємо чат
-            if not self.open_chat(chat_href):
-                return False
-
-            time.sleep(1)
-
-            # 1.5. Перевіряємо чи є кнопка Accept (запит на переписку)
-            self.try_accept_request()
-
-            # 2. Отримуємо username та display_name
-            username = self.get_chat_username()
-            display_name = self.get_display_name()
-
             logger.info(f"Обробка чату: {username} ({display_name})")
 
-            # 3. Отримуємо останнє повідомлення (текст або зображення)
-            last_message = self.get_last_message(chat_username=username)
-
-            if not last_message or not last_message.get('is_from_user'):
-                logger.info(f"Немає нових повідомлень від користувача в {username}")
+            # 1. Читаємо ВСІ повідомлення користувача з екрану
+            user_messages = self.get_user_messages(chat_username=username)
+            if not user_messages:
+                logger.info(f"Немає повідомлень від користувача в {username}")
                 return False
 
-            content = last_message['content']
-            timestamp = last_message.get('timestamp')
-            message_type = last_message.get('message_type', 'text')
-            image_src = last_message.get('image_src')
-
-            # 4. Перевіряємо чи не оброблено вже
-            if message_type == 'image' and image_src:
-                msg_key = f"{username}:img:{image_src[-60:]}"
-            else:
-                msg_key = f"{username}:{content[:50]}"
-            if msg_key in self.processed_messages:
-                logger.info(f"Повідомлення вже оброблено: {msg_key}")
+            # 2. Фільтруємо: тільки НЕВІДПОВІДЖЕНІ (перевірка answer_id в БД)
+            unanswered = self._filter_unanswered(user_messages, username)
+            if not unanswered:
+                logger.info(f"Всі повідомлення від {username} вже оброблені (є answer_id)")
                 return False
 
-            # 5. Завантажуємо зображення (якщо є)
+            logger.info(f"Нових (невідповіджених) повідомлень: {len(unanswered)}")
+            for i, msg in enumerate(unanswered, 1):
+                logger.info(f"  📨 {i}. [{msg['message_type']}] '{msg['content'][:80]}'")
+
+            # 3. Перевірка in-session дедуплікації
+            combined_key = f"{username}:" + "|".join([m['content'][:30] for m in unanswered])
+            if combined_key in self.processed_messages:
+                logger.info("Вже оброблено в цій сесії")
+                return False
+
+            # 4. Об'єднуємо тексти + обробка зображень
+            text_parts = []
             image_data = None
-            if message_type == 'image' and image_src:
-                image_data = self._download_image(image_src)
-                if content == '[Фото]':
-                    content = "Клієнт надіслав фото товару. Що це за товар?"
+            message_type = 'text'
+            for msg in unanswered:
+                if msg['message_type'] == 'image' and msg.get('image_src'):
+                    if not image_data:
+                        image_data = self._download_image(msg['image_src'])
+                        message_type = 'image'
+                    # Не додаємо "[Фото]" в текст
+                else:
+                    text_parts.append(msg['content'])
 
-            # 6. Обробка через AI Agent
-            response = self.ai_agent.process_message(
+            if text_parts:
+                combined_content = " ".join(text_parts)
+                if image_data:
+                    combined_content += " (клієнт також прикріпив фото)"
+            else:
+                combined_content = "Клієнт надіслав фото товару. Що це за товар?"
+
+            logger.info(f"Об'єднаний текст для AI: '{combined_content[:100]}'")
+
+            # 5. Зберігаємо КОЖНЕ повідомлення окремо в БД
+            user_msg_ids = []
+            phone = None
+            for msg in unanswered:
+                p = self.ai_agent._extract_phone(msg['content'])
+                if p:
+                    phone = p
+                msg_id = self.ai_agent.db.add_user_message(
+                    username=username,
+                    content=msg['content'],
+                    display_name=display_name
+                )
+                user_msg_ids.append(msg_id)
+                logger.info(f"Збережено user message id={msg_id}")
+
+            # 6. Створюємо/оновлюємо ліда
+            self.ai_agent.db.create_or_update_lead(
                 username=username,
-                content=content,
                 display_name=display_name,
-                message_type=message_type,
-                message_timestamp=timestamp,
-                image_data=image_data
+                phone=phone
             )
+
+            # 7. Перевіряємо ескалацію
+            if self.ai_agent._check_escalation(combined_content):
+                logger.info(f"Ескалація для {username}")
+                self.ai_agent.escalate_to_human(
+                    username=username,
+                    display_name=display_name,
+                    reason="Клієнт просить зв'язку з оператором",
+                    last_message=combined_content
+                )
+                response = self.ai_agent.prompts.get('escalation_response',
+                    'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
+            else:
+                # 8. Перевіряємо правила поведінки (Google Sheets)
+                behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
+                if behavior_rule and behavior_rule.get('Відповідь'):
+                    response = behavior_rule.get('Відповідь')
+                    logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
+                else:
+                    # 9. Генеруємо відповідь через AI
+                    response = self.ai_agent.generate_response(
+                        username=username,
+                        user_message=combined_content,
+                        display_name=display_name,
+                        message_type=message_type,
+                        image_data=image_data
+                    )
 
             if not response:
                 return False
 
-            # 7. Hover + Reply на повідомлення користувача
-            msg_element = last_message.get('element') or self._last_user_message_element
+            # 10. Зберігаємо відповідь асистента в БД
+            assistant_msg_id = self.ai_agent.db.add_assistant_message(
+                username=username,
+                content=response,
+                display_name=display_name
+            )
+
+            # 11. Зв'язуємо ВСІ повідомлення користувача з ОДНІЄЮ відповіддю (answer_id)
+            for msg_id in user_msg_ids:
+                self.ai_agent.db.update_answer_id(msg_id, assistant_msg_id)
+            logger.info(f"Зв'язано {len(user_msg_ids)} повідомлень → answer #{assistant_msg_id}")
+
+            # 12. Сповіщення про нового ліда (перший контакт)
+            lead = self.ai_agent.db.get_lead(username)
+            if lead and lead.get('messages_count') == 1 and self.ai_agent.telegram:
+                self.ai_agent.telegram.notify_new_lead(
+                    username=username,
+                    display_name=display_name,
+                    phone=phone,
+                    products=combined_content[:100]
+                )
+
+            # 13. Hover + Reply на останнє повідомлення користувача
+            msg_element = self._last_user_message_element
             if msg_element:
                 self.hover_and_click_reply(msg_element, chat_username=username)
 
-            # 8. Відправляємо відповідь
+            # 14. Відправляємо відповідь
             success = self.send_message(response)
-
             if success:
-                self.processed_messages.add(msg_key)
+                self.processed_messages.add(combined_key)
                 logger.info(f"Успішно відповіли {username}")
 
             return success
+
+        except Exception as e:
+            logger.error(f"Помилка обробки чату: {e}")
+            return False
+
+    def process_chat(self, chat_href: str) -> bool:
+        """Обробка чату по href (inbox)."""
+        try:
+            if not self.open_chat(chat_href):
+                return False
+            time.sleep(1)
+            self.try_accept_request()
+
+            username = self.get_chat_username()
+            display_name = self.get_display_name()
+            return self._process_opened_chat(username, display_name)
 
         except Exception as e:
             logger.error(f"Помилка обробки чату: {e}")
@@ -821,85 +962,26 @@ class DirectHandler:
             return False
 
     def process_chat_by_click(self, chat_info: dict) -> bool:
-        """
-        Повна обробка чату: відкрити → Accept → визначити ролі → hover+reply → AI → відповідь.
-        """
+        """Обробка чату через клік (requests/hidden)."""
         try:
             username = chat_info.get('username', 'unknown')
 
-            # 1. Відкриваємо чат кліком
             if not self.open_chat_by_click(chat_info):
                 return False
 
-            # 2. Перевіряємо чи є кнопка Accept (запит на переписку)
             accepted = self.try_accept_request()
             if accepted:
                 logger.info(f"Accept натиснуто для {username}, чекаємо завантаження...")
                 time.sleep(2)
 
-            # 3. Отримуємо username та display_name
             chat_username = self.get_chat_username()
             display_name = self.get_display_name()
 
-            # Якщо не вдалось отримати username з хедера — беремо з chat_info
             if chat_username == "unknown_user":
                 chat_username = username
                 display_name = username
 
-            logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
-
-            # 4. Отримуємо останнє повідомлення (текст або зображення)
-            last_message = self.get_last_message(chat_username=chat_username)
-            if not last_message or not last_message.get('is_from_user'):
-                logger.info(f"Немає нових повідомлень від користувача в {chat_username}")
-                return False
-
-            content = last_message['content']
-            timestamp = last_message.get('timestamp')
-            message_type = last_message.get('message_type', 'text')
-            image_src = last_message.get('image_src')
-
-            # 5. Перевіряємо чи не оброблено вже
-            if message_type == 'image' and image_src:
-                msg_key = f"{chat_username}:img:{image_src[-60:]}"
-            else:
-                msg_key = f"{chat_username}:{content[:50]}"
-            if msg_key in self.processed_messages:
-                logger.info(f"Повідомлення вже оброблено: {msg_key}")
-                return False
-
-            # 6. Завантажуємо зображення (якщо є)
-            image_data = None
-            if message_type == 'image' and image_src:
-                image_data = self._download_image(image_src)
-                if content == '[Фото]':
-                    content = "Клієнт надіслав фото товару. Що це за товар?"
-
-            # 7. AI обробка
-            response = self.ai_agent.process_message(
-                username=chat_username,
-                content=content,
-                display_name=display_name,
-                message_type=message_type,
-                message_timestamp=timestamp,
-                image_data=image_data
-            )
-
-            if not response:
-                return False
-
-            # 8. Hover + Reply на повідомлення користувача
-            msg_element = last_message.get('element') or self._last_user_message_element
-            if msg_element:
-                self.hover_and_click_reply(msg_element, chat_username=chat_username)
-
-            # 9. Відправка відповіді
-            success = self.send_message(response)
-            if success:
-                self.processed_messages.add(msg_key)
-                logger.info(f"Успішно відповіли {chat_username}")
-
-            return success
+            return self._process_opened_chat(chat_username, display_name)
 
         except Exception as e:
             logger.error(f"Помилка process_chat_by_click: {e}")
