@@ -464,56 +464,53 @@ class DirectHandler:
 
             reply_btn = None
 
-            # Спосіб 1: Знаходимо toolbar контейнер (div[style*='--x-width: 96px'])
-            # і шукаємо кнопки (span з svg) всередині
-            try:
-                toolbars = self.driver.find_elements(
-                    By.CSS_SELECTOR, "div[style*='--x-width: 96px']"
-                )
-                for toolbar in toolbars:
-                    # Шукаємо елементи з SVG (це іконки кнопок)
-                    buttons = toolbar.find_elements(By.XPATH,
-                        ".//*[local-name()='svg']/ancestor::span[1] | "
-                        ".//*[local-name()='svg']/ancestor::div[@role='button'][1] | "
-                        ".//*[local-name()='svg']/ancestor::span[@role='button'][1]"
+            # Спосіб 1: aria-label містить текст Reply/Ответ/Відповісти (3 мови)
+            for label in ['Ответьте на сообщение', 'Reply to message', 'Відповісти на повідомлення',
+                          'Ответить', 'Reply', 'Відповісти', 'Ответ']:
+                try:
+                    reply_btn = self.driver.find_element(
+                        By.XPATH, f"//*[contains(@aria-label, '{label}')]"
                     )
-                    if not buttons:
-                        # Fallback: будь-які span або div що містять svg
-                        buttons = toolbar.find_elements(By.XPATH,
-                            ".//*[.//*[local-name()='svg']]"
-                        )
-                    if buttons:
-                        logger.info(f"Toolbar знайдено з {len(buttons)} кнопками")
-                        # Reply — 2-га кнопка: [emoji/реакція, reply/відповісти, more/поділитися]
-                        if len(buttons) >= 2:
-                            reply_btn = buttons[1]
-                            logger.info(f"Reply кнопка знайдена (позиція 2 з {len(buttons)})")
+                    if reply_btn:
+                        logger.info(f"Reply знайдено по aria-label '{label}'")
                         break
-            except Exception as e:
-                logger.info(f"Toolbar пошук: {e}")
+                except Exception:
+                    continue
 
-            # Спосіб 2: aria-label (без role='button')
+            # Спосіб 2: title атрибут (tooltip)
             if not reply_btn:
-                for label in ['Reply', 'reply', 'Ответ', 'Відповісти']:
+                for label in ['Ответьте', 'Reply', 'Відповісти']:
                     try:
                         reply_btn = self.driver.find_element(
-                            By.XPATH, f"//*[contains(@aria-label, '{label}')]"
+                            By.XPATH, f"//*[contains(@title, '{label}')]"
                         )
                         if reply_btn:
-                            logger.info(f"Reply знайдено по aria-label '{label}'")
+                            logger.info(f"Reply знайдено по title '{label}'")
                             break
                     except Exception:
                         continue
 
-            # Спосіб 3: title атрибут
-            if not reply_btn and chat_username:
+            # Спосіб 3: Toolbar контейнер (div[style*='--x-width: 96px'])
+            # Шукаємо SVG іконки напряму — кожна SVG = 1 кнопка
+            # Кнопки: [emoji, reply, more] — Reply = 2-га (індекс 1)
+            if not reply_btn:
                 try:
-                    reply_btn = self.driver.find_element(
-                        By.XPATH, f"//*[contains(@title, '{chat_username}')]"
+                    toolbars = self.driver.find_elements(
+                        By.CSS_SELECTOR, "div[style*='--x-width: 96px']"
                     )
-                    logger.info(f"Reply знайдено по title з username")
-                except Exception:
-                    pass
+                    for toolbar in toolbars:
+                        # Знаходимо саме SVG елементи (не вкладені контейнери)
+                        svgs = toolbar.find_elements(By.CSS_SELECTOR, "svg")
+                        if svgs:
+                            logger.info(f"Toolbar знайдено з {len(svgs)} SVG іконками")
+                            # Reply = 2-га SVG іконка (індекс 1)
+                            if len(svgs) >= 2:
+                                # Клікаємо на батька SVG (span/div кнопку)
+                                reply_btn = svgs[1].find_element(By.XPATH, "..")
+                                logger.info(f"Reply кнопка знайдена (SVG позиція 2 з {len(svgs)})")
+                            break
+                except Exception as e:
+                    logger.info(f"Toolbar пошук: {e}")
 
             if reply_btn:
                 reply_btn.click()
