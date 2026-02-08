@@ -533,16 +533,164 @@ class DirectHandler:
 
         return unanswered
 
-    def _download_image(self, img_src: str) -> bytes:
+    def _download_image(self, img_src: str, img_element=None) -> bytes:
         """
-        Завантажити зображення з Instagram CDN.
-        Використовує cookies з Selenium сесії (Instagram CDN потребує авторизації).
+        Отримати зображення з чату у максимальній якості.
+
+        Спосіб 1: Клік на зображення → відкривається full-size viewer →
+                  скріншот великого зображення → закрити (Escape)
+        Спосіб 2: Витягнути srcset (більший URL) і завантажити з cookies
+        Спосіб 3: Скріншот маленького елемента (fallback)
         """
+        # === Спосіб 1: Клік → full-size viewer → скріншот ===
+        if img_element:
+            try:
+                logger.info("Клік на зображення для відкриття full-size viewer...")
+                img_element.click()
+                time.sleep(2)
+
+                # Шукаємо велике зображення в модальному вікні / overlay
+                fullsize_img = None
+                # Instagram відкриває фото в overlay з великим <img>
+                # Пробуємо різні селектори
+                selectors = [
+                    "div[role='dialog'] img",
+                    "div[style*='position: fixed'] img",
+                    "div[style*='z-index'] img[style*='object-fit']",
+                    "div[role='dialog'] img[style*='object-fit']",
+                ]
+                for selector in selectors:
+                    try:
+                        imgs = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        for img in imgs:
+                            src = img.get_attribute('src') or ''
+                            if 'cdninstagram' in src or 'fbcdn' in src:
+                                # Перевіряємо розмір — нам потрібне ВЕЛИКЕ зображення
+                                natural = self.driver.execute_script(
+                                    "return [arguments[0].naturalWidth, arguments[0].naturalHeight, "
+                                    "arguments[0].getBoundingClientRect().width, "
+                                    "arguments[0].getBoundingClientRect().height]", img
+                                )
+                                nat_w, nat_h, disp_w, disp_h = natural
+                                logger.info(f"Full-size img: natural={nat_w}x{nat_h}, display={disp_w:.0f}x{disp_h:.0f}")
+                                if disp_w > 200 or nat_w > 400:
+                                    fullsize_img = img
+                                    break
+                        if fullsize_img:
+                            break
+                    except Exception:
+                        continue
+
+                if fullsize_img:
+                    # Скріншот великого зображення
+                    png_bytes = fullsize_img.screenshot_as_png
+                    logger.info(f"Full-size скріншот: {len(png_bytes)} байт")
+
+                    # Також спробуємо завантажити по URL (ще краща якість)
+                    fullsize_src = fullsize_img.get_attribute('src') or ''
+                    if fullsize_src:
+                        try:
+                            selenium_cookies = self.driver.get_cookies()
+                            cookies = {c['name']: c['value'] for c in selenium_cookies}
+                            resp = requests.get(
+                                fullsize_src,
+                                cookies=cookies,
+                                headers={
+                                    'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                                    'Referer': 'https://www.instagram.com/',
+                                },
+                                timeout=15
+                            )
+                            if resp.status_code == 200 and len(resp.content) > len(png_bytes):
+                                logger.info(f"Full-size URL download: {len(resp.content)} байт (краще за скріншот)")
+                                png_bytes = resp.content
+                        except Exception as e:
+                            logger.warning(f"Full-size URL fallback: {e}")
+
+                    # Закриваємо viewer (Escape)
+                    try:
+                        self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                        time.sleep(1)
+                    except Exception:
+                        pass
+
+                    if png_bytes and len(png_bytes) > 5000:
+                        return png_bytes
+                else:
+                    logger.warning("Full-size зображення не знайдено в overlay")
+                    # Закриваємо viewer
+                    try:
+                        self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                        time.sleep(1)
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.warning(f"Full-size viewer не вдався: {e}")
+                # Закриваємо на всякий випадок
+                try:
+                    self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
+        # === Спосіб 2: srcset з оригінального елемента (більший URL) ===
+        if img_element:
+            try:
+                srcset = img_element.get_attribute('srcset') or ''
+                if srcset:
+                    # srcset = "url1 320w, url2 640w, url3 1080w" — беремо найбільший
+                    parts = [p.strip() for p in srcset.split(',') if p.strip()]
+                    best_url = None
+                    best_w = 0
+                    for part in parts:
+                        tokens = part.split()
+                        if len(tokens) >= 2:
+                            url = tokens[0]
+                            w_str = tokens[1].replace('w', '')
+                            try:
+                                w = int(w_str)
+                                if w > best_w:
+                                    best_w = w
+                                    best_url = url
+                            except ValueError:
+                                pass
+                        elif len(tokens) == 1:
+                            best_url = tokens[0]
+
+                    if best_url and best_w > 300:
+                        logger.info(f"srcset: знайдено URL {best_w}w")
+                        selenium_cookies = self.driver.get_cookies()
+                        cookies = {c['name']: c['value'] for c in selenium_cookies}
+                        resp = requests.get(
+                            best_url,
+                            cookies=cookies,
+                            headers={
+                                'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                                'Referer': 'https://www.instagram.com/',
+                            },
+                            timeout=15
+                        )
+                        if resp.status_code == 200 and len(resp.content) > 5000:
+                            logger.info(f"srcset download: {len(resp.content)} байт")
+                            return resp.content
+            except Exception as e:
+                logger.warning(f"srcset помилка: {e}")
+
+        # === Спосіб 3: Скріншот маленького елемента (fallback) ===
+        if img_element:
+            try:
+                png_bytes = img_element.screenshot_as_png
+                if png_bytes and len(png_bytes) > 2000:
+                    logger.info(f"Зображення (small screenshot): {len(png_bytes)} байт")
+                    return png_bytes
+            except Exception as e:
+                logger.warning(f"Small screenshot не вдався: {e}")
+
+        # === Спосіб 4: URL download (original src) ===
         try:
-            # Беремо cookies з браузерної сесії
             selenium_cookies = self.driver.get_cookies()
             cookies = {c['name']: c['value'] for c in selenium_cookies}
-
             response = requests.get(
                 img_src,
                 cookies=cookies,
@@ -555,17 +703,14 @@ class DirectHandler:
                 timeout=15
             )
             if response.status_code == 200 and len(response.content) > 2000:
-                logger.info(f"Зображення завантажено: {len(response.content)} байт")
+                logger.info(f"Зображення завантажено (URL): {len(response.content)} байт")
                 return response.content
-            elif response.status_code == 200:
-                logger.warning(f"Зображення занадто маленьке: {len(response.content)} байт (мініатюра?)")
-                return None
             else:
-                logger.warning(f"HTTP {response.status_code} при завантаженні зображення")
-                return None
+                logger.warning(f"URL завантаження: {response.status_code}, {len(response.content)} байт (замало)")
         except Exception as e:
-            logger.error(f"Помилка завантаження зображення: {e}")
-            return None
+            logger.warning(f"URL завантаження не вдалося: {e}")
+
+        return None
 
     def hover_and_click_reply(self, message_element, chat_username: str = None) -> bool:
         """
@@ -795,8 +940,13 @@ class DirectHandler:
             for msg in unanswered:
                 if msg['message_type'] == 'image' and msg.get('image_src'):
                     if not image_data:
-                        image_data = self._download_image(msg['image_src'])
-                        message_type = 'image'
+                        logger.info(f"📷 Завантажуємо зображення: {msg['image_src'][:80]}...")
+                        image_data = self._download_image(msg['image_src'], msg.get('element'))
+                        if image_data:
+                            message_type = 'image'
+                            logger.info(f"📷 Зображення готове: {len(image_data)} байт → відправимо в Gemini Vision")
+                        else:
+                            logger.warning("📷 Не вдалося завантажити зображення!")
                     # Не додаємо "[Фото]" в текст
                 else:
                     text_parts.append(msg['content'])
@@ -804,9 +954,9 @@ class DirectHandler:
             if text_parts:
                 combined_content = " ".join(text_parts)
                 if image_data:
-                    combined_content += " (клієнт також прикріпив фото)"
+                    combined_content += " (клієнт також прикріпив фото, опиши що на ньому)"
             else:
-                combined_content = "Клієнт надіслав фото товару. Що це за товар?"
+                combined_content = "Клієнт надіслав фото товару. Опиши детально що зображено на фото (бренд, колір, тип товару) і допоможи з вибором."
 
             logger.info(f"Об'єднаний текст для AI: '{combined_content[:100]}'")
 

@@ -216,6 +216,10 @@ class AIAgent:
             if message_type == 'image' and image_data:
                 # Vision API - аналіз зображення
                 text_prompt = user_message or "Що це за товар? Допоможіть з вибором."
+                # Auto-detect mime type (screenshot = PNG, download = JPEG)
+                mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
+                logger.info(f"📷 Відправляємо зображення в Gemini Vision: {len(image_data)} байт, mime={mime}")
+                logger.info(f"📷 Текстовий промпт до фото: '{text_prompt[:100]}'")
                 messages.append(
                     types.Content(
                         role="user",
@@ -223,7 +227,7 @@ class AIAgent:
                             types.Part(text=text_prompt),
                             types.Part(
                                 inline_data=types.Blob(
-                                    mime_type="image/jpeg",
+                                    mime_type=mime,
                                     data=image_data
                                 )
                             )
@@ -252,7 +256,10 @@ class AIAgent:
             # Отримуємо текст відповіді
             assistant_message = response.text
 
-            logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:50]}...")
+            if message_type == 'image':
+                logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
+            else:
+                logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
 
             return assistant_message
 
