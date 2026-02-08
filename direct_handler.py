@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 class DirectHandler:
     # Всі 3 локації для перевірки непрочитаних чатів
     DM_LOCATIONS = [
-        # {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},  # TODO: розкоментувати після дебагу
-        # {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},  # TODO: розкоментувати після дебагу
+        {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},
+        {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},
         {'url': 'https://www.instagram.com/direct/requests/hidden/', 'name': 'Приховані запити'},
     ]
 
@@ -216,7 +216,17 @@ class DirectHandler:
             logger.info(f"Знайдено кнопку Accept!")
             accept_buttons[0].click()
             logger.info("Натиснуто Accept — запит на переписку прийнято!")
-            time.sleep(3)
+
+            # Чекаємо поки чат повністю завантажиться (textbox з'явиться)
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
+                )
+                logger.info("Чат завантажено після Accept (textbox знайдено)")
+            except Exception:
+                logger.warning("Textbox не з'явився після Accept, чекаємо ще...")
+                time.sleep(5)
+
             return True
 
         except Exception as e:
@@ -318,43 +328,68 @@ class DirectHandler:
             return []
 
     def get_last_message(self) -> dict:
-        """Отримати останнє повідомлення в чаті."""
+        """
+        Отримати останнє повідомлення в чаті.
+        Повідомлення лежать в: div[@role='presentation'] > span[@dir='auto'] > div[@dir='auto']
+        Відправник визначається через a[aria-label^='Open the profile page'] поруч.
+        """
+        content = None
+
+        # Спосіб 1: div[@role='presentation'] з div[@dir='auto'] — реальна структура Instagram
         try:
-            # Шукаємо останнє повідомлення
-            message_divs = self.driver.find_elements(
-                By.XPATH, "//div[@role='row']//div[contains(@class, 'x1lliihq')]"
+            msg_divs = self.driver.find_elements(
+                By.XPATH, "//div[@role='presentation']//div[@dir='auto']"
             )
+            if msg_divs:
+                for div in reversed(msg_divs):
+                    text = div.text.strip()
+                    if text and len(text) > 0:
+                        content = text
+                        break
+        except Exception:
+            pass
 
-            if not message_divs:
-                return None
-
-            last_msg_div = message_divs[-1]
-
-            # Отримуємо текст
+        # Спосіб 2: div[@role='row'] з div[contains(@class, 'x1lliihq')] — стандартний inbox
+        if not content:
             try:
-                content_span = last_msg_div.find_element(By.XPATH, ".//span")
-                content = content_span.text
+                message_divs = self.driver.find_elements(
+                    By.XPATH, "//div[@role='row']//div[contains(@class, 'x1lliihq')]"
+                )
+                if message_divs:
+                    last = message_divs[-1]
+                    try:
+                        content = last.find_element(By.XPATH, ".//span").text
+                    except Exception:
+                        content = last.text
             except Exception:
-                content = last_msg_div.text
+                pass
 
-            if not content:
-                return None
+        # Спосіб 3: span[@dir='auto'] > div[@dir='auto'] — ширший пошук
+        if not content:
+            try:
+                msg_elements = self.driver.find_elements(
+                    By.XPATH, "//span[@dir='auto']//div[@dir='auto']"
+                )
+                if msg_elements:
+                    for elem in reversed(msg_elements):
+                        text = elem.text.strip()
+                        if text and len(text) > 0:
+                            content = text
+                            break
+            except Exception:
+                pass
 
-            # Визначаємо від кого повідомлення
-            parent_classes = last_msg_div.get_attribute('class') or ''
-
-            # Спрощена логіка - за замовчуванням вважаємо що від користувача
-            is_from_user = True
-
-            return {
-                'content': content,
-                'is_from_user': is_from_user,
-                'timestamp': datetime.now()
-            }
-
-        except Exception as e:
-            logger.error(f"Помилка отримання останнього повідомлення: {e}")
+        if not content:
+            logger.warning("Не вдалося знайти повідомлення в чаті")
             return None
+
+        logger.info(f"Знайдено повідомлення: '{content[:50]}'")
+
+        return {
+            'content': content,
+            'is_from_user': True,
+            'timestamp': datetime.now()
+        }
 
     def send_message(self, text: str) -> bool:
         """Відправити повідомлення в поточний чат."""
@@ -387,34 +422,61 @@ class DirectHandler:
             return False
 
     def get_chat_username(self) -> str:
-        """Отримати username співрозмовника з відкритого чату."""
+        """
+        Отримати username співрозмовника з відкритого чату.
+        Шукаємо a[aria-label^='Open the profile page of'] — це посилання на профіль
+        біля повідомлень. В href="/username" лежить справжній username.
+        """
+        # Спосіб 1: a[aria-label] з повідомлень — найнадійніший (href="/qarbbon")
         try:
-            # Шукаємо username в хедері чату
-            header = self.driver.find_element(
-                By.XPATH, "//header//a[contains(@href, '/')]//span"
+            profile_links = self.driver.find_elements(
+                By.XPATH, "//a[starts-with(@aria-label, 'Open the profile page')]"
             )
-            username = header.text
-            return username
+            if profile_links:
+                href = profile_links[0].get_attribute('href') or ''
+                # Витягуємо username з href: "https://instagram.com/qarbbon" або "/qarbbon"
+                username = href.rstrip('/').split('/')[-1]
+                if username and len(username) > 0:
+                    logger.info(f"Username (profile link): {username}")
+                    return username
         except Exception:
-            try:
-                # Альтернативний спосіб
-                header = self.driver.find_element(
-                    By.XPATH, "//div[contains(@class, 'x1n2onr6')]//span[contains(@class, 'x1lliihq')]"
-                )
-                return header.text
-            except Exception:
-                return "unknown_user"
+            pass
+
+        # Спосіб 2: span[@title] в хедері
+        try:
+            title_span = self.driver.find_element(By.XPATH, "//header//span[@title]")
+            username = title_span.get_attribute('title')
+            if username:
+                logger.info(f"Username (header title): {username}")
+                return username
+        except Exception:
+            pass
+
+        # Спосіб 3: перший span з текстом в header
+        try:
+            header_spans = self.driver.find_elements(By.XPATH, "//header//span")
+            for span in header_spans:
+                text = span.text.strip()
+                if text and len(text) > 1:
+                    logger.info(f"Username (header span): {text}")
+                    return text
+        except Exception:
+            pass
+
+        logger.warning("Не вдалося отримати username")
+        return "unknown_user"
 
     def get_display_name(self) -> str:
-        """Отримати display name (ім'я) співрозмовника."""
+        """Отримати display name (ім'я) з хедера чату."""
         try:
-            # Шукаємо display name в хедері
-            name_elem = self.driver.find_element(
-                By.XPATH, "//header//div[contains(@class, 'x1lliihq')]//span"
-            )
-            return name_elem.text
+            header_spans = self.driver.find_elements(By.XPATH, "//header//span")
+            for span in header_spans:
+                text = span.text.strip()
+                if text and len(text) > 1:
+                    return text
         except Exception:
-            return None
+            pass
+        return None
 
     def process_chat(self, chat_href: str) -> bool:
         """
@@ -557,6 +619,12 @@ class DirectHandler:
             # 3. Отримуємо username та display_name
             chat_username = self.get_chat_username()
             display_name = self.get_display_name()
+
+            # Якщо не вдалось отримати username з хедера — беремо з chat_info
+            if chat_username == "unknown_user":
+                chat_username = username
+                display_name = username
+
             logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
 
             # 4. Отримуємо останнє повідомлення
