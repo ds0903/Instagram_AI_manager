@@ -200,49 +200,27 @@ class DirectHandler:
     def try_accept_request(self) -> bool:
         """
         Перевірити чи є кнопка Accept (прийняти запит на переписку).
+        Кнопка Accept — це div[@role='button'] з текстом "Accept" прямо всередині (без span).
         Якщо є — натиснути і дочекатись завантаження.
         """
         try:
-            # Шукаємо кнопку Accept по тексту
+            # Кнопка Accept — div[@role='button'] з прямим текстом "Accept"
             accept_buttons = self.driver.find_elements(
-                By.XPATH, "//div[@role='button']//span[text()='Accept'] | //button//span[text()='Accept']"
+                By.XPATH, "//div[@role='button'][text()='Accept']"
             )
 
             if not accept_buttons:
-                logger.debug("Кнопка Accept не знайдена (це звичайний чат)")
+                logger.info("Кнопка Accept не знайдена (це звичайний чат)")
                 return False
 
-            # Піднімаємось до клікабельного батька (role="button" або button)
-            for accept_span in accept_buttons:
-                try:
-                    # Спробуємо знайти батьківський button/div
-                    clickable = None
-                    try:
-                        clickable = accept_span.find_element(
-                            By.XPATH, "./ancestor::div[@role='button']"
-                        )
-                    except Exception:
-                        try:
-                            clickable = accept_span.find_element(
-                                By.XPATH, "./ancestor::button"
-                            )
-                        except Exception:
-                            # Якщо не знайшли батька — клікаємо сам span
-                            clickable = accept_span
-
-                    clickable.click()
-                    logger.info("Натиснуто Accept — запит на переписку прийнято!")
-                    time.sleep(2)
-                    return True
-
-                except Exception as e:
-                    logger.debug(f"Помилка кліку на Accept: {e}")
-                    continue
-
-            return False
+            logger.info(f"Знайдено кнопку Accept!")
+            accept_buttons[0].click()
+            logger.info("Натиснуто Accept — запит на переписку прийнято!")
+            time.sleep(3)
+            return True
 
         except Exception as e:
-            logger.error(f"Помилка пошуку Accept: {e}")
+            logger.error(f"Помилка пошуку/кліку Accept: {e}")
             return False
 
     def get_all_unread_chats(self) -> list:
