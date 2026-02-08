@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -29,6 +30,7 @@ class DirectHandler:
         self.driver = driver
         self.ai_agent = ai_agent
         self.processed_messages = set()  # Вже оброблені повідомлення
+        self._last_user_message_element = None  # Елемент останнього повідомлення користувача (для hover+reply)
 
     def go_to_location(self, url: str) -> bool:
         """Перехід на конкретну сторінку Direct (inbox/requests/hidden)."""
@@ -330,69 +332,176 @@ class DirectHandler:
             logger.error(f"Помилка читання повідомлень: {e}")
             return []
 
-    def get_last_message(self) -> dict:
+    def _is_message_from_user(self, msg_element, chat_username: str) -> bool:
         """
-        Отримати останнє повідомлення в чаті.
-        Повідомлення лежать в: div[@role='presentation'] > span[@dir='auto'] > div[@dir='auto']
-        Відправник визначається через a[aria-label^='Open the profile page'] поруч.
+        Визначити чи повідомлення від користувача через <a href="/username">.
+        Піднімаємось по DOM від елемента повідомлення і шукаємо profile link.
+        Якщо знайшли <a href="/username"> — це повідомлення користувача.
+        Якщо не знайшли — це наше повідомлення (assistant).
         """
-        content = None
-
-        # Спосіб 1: div[@role='presentation'] з div[@dir='auto'] — реальна структура Instagram
         try:
+            return self.driver.execute_script("""
+                var msg = arguments[0];
+                var username = arguments[1].toLowerCase();
+
+                var current = msg;
+                for (var i = 0; i < 12; i++) {
+                    current = current.parentElement;
+                    if (!current || current === document.body) break;
+
+                    // Зупиняємось на великих контейнерах
+                    var role = current.getAttribute('role');
+                    if (role === 'grid' || role === 'main' ||
+                        current.tagName === 'MAIN' || current.tagName === 'SECTION') {
+                        break;
+                    }
+
+                    // Шукаємо profile link
+                    var link = current.querySelector('a[aria-label^="Open the profile page"]');
+                    if (link) {
+                        var href = (link.getAttribute('href') || '').toLowerCase();
+                        return href.includes('/' + username);
+                    }
+                }
+                return false;
+            """, msg_element, chat_username)
+        except Exception as e:
+            logger.error(f"Помилка визначення відправника: {e}")
+            return False
+
+    def get_last_message(self, chat_username: str = None) -> dict:
+        """
+        Отримати останнє повідомлення в чаті та визначити відправника.
+        Використовує <a href="/username"> для визначення повідомлень користувача.
+        Повертає dict з 'content', 'is_from_user', 'element', 'timestamp'.
+        """
+        if not chat_username:
+            chat_username = self.get_chat_username()
+
+        # Шукаємо всі повідомлення
+        msg_divs = self.driver.find_elements(
+            By.XPATH, "//div[@role='presentation']//div[@dir='auto']"
+        )
+
+        # Fallback
+        if not msg_divs:
             msg_divs = self.driver.find_elements(
-                By.XPATH, "//div[@role='presentation']//div[@dir='auto']"
+                By.XPATH, "//span[@dir='auto']//div[@dir='auto']"
             )
-            if msg_divs:
-                for div in reversed(msg_divs):
-                    text = div.text.strip()
-                    if text and len(text) > 0:
-                        content = text
-                        break
-        except Exception:
-            pass
 
-        # Спосіб 2: div[@role='row'] з div[contains(@class, 'x1lliihq')] — стандартний inbox
-        if not content:
-            try:
-                message_divs = self.driver.find_elements(
-                    By.XPATH, "//div[@role='row']//div[contains(@class, 'x1lliihq')]"
-                )
-                if message_divs:
-                    last = message_divs[-1]
-                    try:
-                        content = last.find_element(By.XPATH, ".//span").text
-                    except Exception:
-                        content = last.text
-            except Exception:
-                pass
-
-        # Спосіб 3: span[@dir='auto'] > div[@dir='auto'] — ширший пошук
-        if not content:
-            try:
-                msg_elements = self.driver.find_elements(
-                    By.XPATH, "//span[@dir='auto']//div[@dir='auto']"
-                )
-                if msg_elements:
-                    for elem in reversed(msg_elements):
-                        text = elem.text.strip()
-                        if text and len(text) > 0:
-                            content = text
-                            break
-            except Exception:
-                pass
-
-        if not content:
+        if not msg_divs:
             logger.warning("Не вдалося знайти повідомлення в чаті")
             return None
 
-        logger.info(f"Знайдено повідомлення: '{content[:50]}'")
+        # Збираємо всі повідомлення з визначенням ролей
+        all_messages = []
+        for msg_div in msg_divs:
+            text = msg_div.text.strip()
+            if not text:
+                continue
 
-        return {
-            'content': content,
-            'is_from_user': True,
-            'timestamp': datetime.now()
-        }
+            is_from_user = self._is_message_from_user(msg_div, chat_username)
+
+            all_messages.append({
+                'content': text,
+                'is_from_user': is_from_user,
+                'element': msg_div,
+                'timestamp': datetime.now()
+            })
+
+        if not all_messages:
+            logger.warning("Не знайдено повідомлень з текстом")
+            return None
+
+        # Логуємо всі знайдені повідомлення для дебагу
+        for i, msg in enumerate(all_messages):
+            role_str = 'USER' if msg['is_from_user'] else 'ASSISTANT'
+            logger.info(f"  [{i+1}] {role_str}: '{msg['content'][:60]}'")
+
+        # Зберігаємо останнє повідомлення КОРИСТУВАЧА для hover+reply
+        last_user_msgs = [m for m in all_messages if m['is_from_user']]
+        self._last_user_message_element = last_user_msgs[-1]['element'] if last_user_msgs else None
+
+        # Повертаємо ОСТАННЄ повідомлення (щоб перевірити чи треба відповідати)
+        last = all_messages[-1]
+        logger.info(f"Останнє повідомлення: '{last['content'][:50]}' "
+                     f"(від {'користувача' if last['is_from_user'] else 'нас'})")
+
+        return last
+
+    def hover_and_click_reply(self, message_element, chat_username: str = None) -> bool:
+        """
+        Навести мишку на повідомлення користувача і натиснути кнопку Reply.
+        Кнопка з'являється при hover.
+        """
+        try:
+            # Піднімаємось до div[@role='presentation'] для hover
+            hover_target = message_element
+            try:
+                parent = message_element.find_element(
+                    By.XPATH, "./ancestor::div[@role='presentation']"
+                )
+                if parent:
+                    hover_target = parent
+            except Exception:
+                pass
+
+            # Hover
+            logger.info("Наводимо мишку на повідомлення для Reply...")
+            actions = ActionChains(self.driver)
+            actions.move_to_element(hover_target).perform()
+            time.sleep(1.5)
+
+            # Шукаємо кнопку Reply
+            reply_btn = None
+
+            # Спосіб 1: aria-label="Reply"
+            try:
+                reply_btn = self.driver.find_element(
+                    By.XPATH, "//*[@aria-label='Reply' and @role='button']"
+                )
+            except Exception:
+                pass
+
+            # Спосіб 2: aria-label містить "Reply"
+            if not reply_btn:
+                try:
+                    reply_btn = self.driver.find_element(
+                        By.XPATH, "//*[contains(@aria-label, 'Reply') and @role='button']"
+                    )
+                except Exception:
+                    pass
+
+            # Спосіб 3: aria-label містить "Ответ" (російська локалізація)
+            if not reply_btn:
+                try:
+                    reply_btn = self.driver.find_element(
+                        By.XPATH, "//*[contains(@aria-label, 'Ответ') and @role='button']"
+                    )
+                except Exception:
+                    pass
+
+            # Спосіб 4: aria-label містить username (tooltip "Ответьте на сообщение от {user}")
+            if not reply_btn and chat_username:
+                try:
+                    reply_btn = self.driver.find_element(
+                        By.XPATH, f"//*[contains(@aria-label, '{chat_username}') and @role='button']"
+                    )
+                except Exception:
+                    pass
+
+            if reply_btn:
+                reply_btn.click()
+                time.sleep(1)
+                logger.info("Кнопку Reply натиснуто!")
+                return True
+            else:
+                logger.warning("Кнопку Reply не знайдено після hover")
+                return False
+
+        except Exception as e:
+            logger.error(f"Помилка hover/reply: {e}")
+            return False
 
     def send_message(self, text: str) -> bool:
         """Відправити повідомлення в поточний чат."""
@@ -485,9 +594,10 @@ class DirectHandler:
         """
         Обробка одного чату:
         1. Відкрити чат
-        2. Прочитати останнє повідомлення
-        3. Згенерувати відповідь через AI
-        4. Відправити відповідь
+        2. Прочитати останнє повідомлення (з визначенням відправника через href)
+        3. Hover + Reply на повідомлення користувача
+        4. Згенерувати відповідь через AI
+        5. Відправити відповідь
         """
         try:
             # 1. Відкриваємо чат
@@ -505,8 +615,8 @@ class DirectHandler:
 
             logger.info(f"Обробка чату: {username} ({display_name})")
 
-            # 3. Отримуємо останнє повідомлення
-            last_message = self.get_last_message()
+            # 3. Отримуємо останнє повідомлення (з визначенням ролі через profile link)
+            last_message = self.get_last_message(chat_username=username)
 
             if not last_message or not last_message.get('is_from_user'):
                 logger.info(f"Немає нових повідомлень від користувача в {username}")
@@ -533,7 +643,12 @@ class DirectHandler:
             if not response:
                 return False
 
-            # 6. Відправляємо відповідь
+            # 6. Hover + Reply на повідомлення користувача
+            msg_element = last_message.get('element') or self._last_user_message_element
+            if msg_element:
+                self.hover_and_click_reply(msg_element, chat_username=username)
+
+            # 7. Відправляємо відповідь
             success = self.send_message(response)
 
             if success:
@@ -604,7 +719,7 @@ class DirectHandler:
 
     def process_chat_by_click(self, chat_info: dict) -> bool:
         """
-        Повна обробка чату: відкрити → Accept → AI → відповідь.
+        Повна обробка чату: відкрити → Accept → визначити ролі → hover+reply → AI → відповідь.
         """
         try:
             username = chat_info.get('username', 'unknown')
@@ -630,8 +745,8 @@ class DirectHandler:
 
             logger.info(f"Обробка чату (клік): {chat_username} ({display_name})")
 
-            # 4. Отримуємо останнє повідомлення
-            last_message = self.get_last_message()
+            # 4. Отримуємо останнє повідомлення (з визначенням ролі через profile link)
+            last_message = self.get_last_message(chat_username=chat_username)
             if not last_message or not last_message.get('is_from_user'):
                 logger.info(f"Немає нових повідомлень від користувача в {chat_username}")
                 return False
@@ -657,7 +772,12 @@ class DirectHandler:
             if not response:
                 return False
 
-            # 7. Відправка відповіді
+            # 7. Hover + Reply на повідомлення користувача
+            msg_element = last_message.get('element') or self._last_user_message_element
+            if msg_element:
+                self.hover_and_click_reply(msg_element, chat_username=chat_username)
+
+            # 8. Відправка відповіді
             success = self.send_message(response)
             if success:
                 self.processed_messages.add(msg_key)
