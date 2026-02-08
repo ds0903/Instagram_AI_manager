@@ -541,6 +541,58 @@ class DirectHandler:
 
         return unanswered
 
+    def _close_image_viewer(self):
+        """Закрити overlay перегляду зображення (кілька стратегій)."""
+        # Стратегія 1: Keys.ESCAPE через ActionChains (надійніше ніж body.send_keys)
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+            time.sleep(1)
+            # Перевіряємо чи закрився — шукаємо кнопку закриття, якщо є — не закрився
+            close_btns = self.driver.find_elements(
+                By.XPATH,
+                "//svg[@aria-label='Закрыть' or @aria-label='Закрити' or @aria-label='Close']"
+            )
+            if not close_btns:
+                logger.info("Viewer закрито через Escape")
+                return
+        except Exception as e:
+            logger.debug(f"Escape не спрацював: {e}")
+
+        # Стратегія 2: Клік на хрестик (SVG з aria-label)
+        for label in ['Закрыть', 'Закрити', 'Close']:
+            try:
+                close_btn = self.driver.find_element(
+                    By.XPATH, f"//svg[@aria-label='{label}']"
+                )
+                close_btn.click()
+                time.sleep(1)
+                logger.info(f"Viewer закрито кліком на '{label}'")
+                return
+            except Exception:
+                continue
+
+        # Стратегія 3: Клік на title елемент всередині SVG
+        for label in ['Закрыть', 'Закрити', 'Close']:
+            try:
+                close_btn = self.driver.find_element(
+                    By.XPATH, f"//svg[title='{label}']"
+                )
+                close_btn.click()
+                time.sleep(1)
+                logger.info(f"Viewer закрито через title '{label}'")
+                return
+            except Exception:
+                continue
+
+        # Стратегія 4: body.send_keys (старий спосіб)
+        try:
+            self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+            time.sleep(1)
+            logger.info("Viewer закрито через body.send_keys(ESC)")
+        except Exception:
+            logger.warning("Не вдалося закрити viewer жодним способом")
+
     def _download_image(self, img_src: str, img_element=None) -> bytes:
         """
         Отримати зображення з чату у максимальній якості.
@@ -624,32 +676,20 @@ class DirectHandler:
                         except Exception as e:
                             logger.warning(f"Full-size URL fallback: {e}")
 
-                    # Закриваємо viewer (Escape)
-                    try:
-                        self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
-                        time.sleep(1)
-                    except Exception:
-                        pass
+                    # Закриваємо viewer
+                    self._close_image_viewer()
 
                     if png_bytes and len(png_bytes) > 5000:
                         return png_bytes
                 else:
                     logger.warning("Full-size зображення не знайдено в overlay")
                     # Закриваємо viewer
-                    try:
-                        self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
-                        time.sleep(1)
-                    except Exception:
-                        pass
+                    self._close_image_viewer()
 
             except Exception as e:
                 logger.warning(f"Full-size viewer не вдався: {e}")
                 # Закриваємо на всякий випадок
-                try:
-                    self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
-                    time.sleep(0.5)
-                except Exception:
-                    pass
+                self._close_image_viewer()
 
         # === Спосіб 2: srcset з оригінального елемента (більший URL) ===
         if img_element:
