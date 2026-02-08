@@ -22,6 +22,9 @@ class DirectHandler:
         {'url': 'https://www.instagram.com/direct/requests/hidden/', 'name': 'Приховані запити'},
     ]
 
+    # [DEBUG] Фільтр — відповідаємо тільки цьому username (None = всім)
+    DEBUG_ONLY_USERNAME = "Danyl"  # TODO: прибрати після дебагу (поставити None)
+
     def __init__(self, driver, ai_agent):
         self.driver = driver
         self.ai_agent = ai_agent
@@ -668,8 +671,8 @@ class DirectHandler:
 
     def run_inbox_loop(self, check_interval: int = 30, heartbeat_callback=None):
         """
-        Головний цикл: перевіряє ВСІ 3 локації (inbox, requests, hidden),
-        обробляє нові повідомлення.
+        Головний цикл: перевіряє локації ПО ЧЕРЗІ.
+        Директ → знайшли → відповіли на всі → Запити → відповіли → Приховані → відповіли.
 
         Args:
             check_interval: інтервал перевірки в секундах
@@ -677,6 +680,8 @@ class DirectHandler:
         """
         logger.info(f"Запуск inbox loop, інтервал: {check_interval}с")
         logger.info(f"Локації для перевірки: {[loc['name'] for loc in self.DM_LOCATIONS]}")
+        if self.DEBUG_ONLY_USERNAME:
+            logger.info(f"[DEBUG] Фільтр: відповідаємо тільки користувачу '{self.DEBUG_ONLY_USERNAME}'")
 
         def heartbeat(msg: str = None):
             if heartbeat_callback:
@@ -684,37 +689,69 @@ class DirectHandler:
 
         while True:
             try:
-                heartbeat("Ітерація inbox loop — обхід всіх локацій")
+                heartbeat("Ітерація inbox loop")
+                total_processed = 0
 
-                # Збираємо непрочитані чати з усіх 3 локацій
-                all_unread = self.get_all_unread_chats()
-                heartbeat(f"Знайдено {len(all_unread)} непрочитаних")
+                # Обходимо кожну локацію ПО ЧЕРЗІ: знайшли чати → відповіли → наступна
+                for location in self.DM_LOCATIONS:
+                    url = location['url']
+                    name = location['name']
 
-                if all_unread:
-                    logger.info(f"Знайдено {len(all_unread)} чатів у всіх локаціях")
+                    heartbeat(f"Перевірка: {name}")
+                    logger.info(f"Перевіряю: {name} ({url})")
 
-                    for i, chat in enumerate(all_unread):
-                        heartbeat(f"Обробка чату {i+1}/{len(all_unread)}: {chat.get('username', 'unknown')} [{chat.get('location')}]")
-                        logger.info(f"Обробка [{i+1}/{len(all_unread)}]: {chat['username']} з {chat['location']}")
+                    if not self.go_to_location(url):
+                        logger.warning(f"Не вдалося відкрити {name}, пропускаю")
+                        continue
+
+                    # Знаходимо чати на цій сторінці
+                    # [DEBUG] get_all_chats() — всі чати
+                    found_chats = self.get_all_chats()
+                    # found_chats = self.get_unread_chats()  # TODO: розкоментувати після дебагу
+
+                    if not found_chats:
+                        logger.info(f"  {name}: чатів не знайдено")
+                        time.sleep(random.uniform(1, 2))
+                        continue
+
+                    logger.info(f"  {name}: знайдено {len(found_chats)} чатів, обробляю...")
+
+                    # Відповідаємо на кожен чат ЗРАЗУ в цій локації
+                    for i, chat in enumerate(found_chats):
+                        chat_username = chat.get('username', 'unknown')
+
+                        # [DEBUG] Фільтр по username
+                        if self.DEBUG_ONLY_USERNAME:
+                            # Пропускаємо всіх крім debug username
+                            # Перевіряємо і display name і можливий username
+                            if self.DEBUG_ONLY_USERNAME.lower() not in chat_username.lower():
+                                logger.info(f"  [DEBUG] Пропускаю {chat_username} (не {self.DEBUG_ONLY_USERNAME})")
+                                continue
+
+                        heartbeat(f"Обробка: {chat_username} [{name}]")
+                        logger.info(f"  Обробка [{i+1}/{len(found_chats)}]: {chat_username}")
+
+                        # Додаємо location_url для process_chat_by_click
+                        chat['location_url'] = url
+                        chat['location'] = name
 
                         if chat.get('href'):
-                            # Є пряме посилання — переходимо по href
                             self.process_chat(chat['href'])
                         else:
-                            # Немає href (requests/hidden) — відкриваємо кліком
                             self.process_chat_by_click(chat)
-                        time.sleep(random.uniform(2, 5))  # Пауза між чатами
-                else:
-                    logger.info("Чатів не знайдено в жодній локації")
 
-                # Чекаємо перед наступною перевіркою
-                logger.info(f"Чекаємо {check_interval}с...")
+                        total_processed += 1
+                        time.sleep(random.uniform(2, 5))
+
+                    time.sleep(random.uniform(1, 2))
+
+                logger.info(f"Оброблено {total_processed} чатів. Чекаємо {check_interval}с...")
                 heartbeat("Очікування наступної перевірки")
                 time.sleep(check_interval)
 
             except KeyboardInterrupt:
                 logger.info("Зупинка за запитом користувача")
-                raise  # Передаємо вверх для коректної обробки
+                raise
             except Exception as e:
                 logger.error(f"Помилка в inbox loop: {e}")
                 heartbeat("Помилка в циклі, повтор")
