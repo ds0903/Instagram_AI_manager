@@ -486,6 +486,95 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку зображень: {e}")
 
+        # === ГОЛОСОВІ ПОВІДОМЛЕННЯ (audio/voice notes) ===
+        try:
+            # Стратегія 1: <audio> елементи з CDN src
+            audio_elements = self.driver.find_elements(By.XPATH, "//audio")
+            logger.info(f"🎤 Пошук голосових: знайдено {len(audio_elements)} audio елементів")
+            for audio_el in audio_elements:
+                try:
+                    src = audio_el.get_attribute('src') or ''
+                    # Перевіряємо вкладені <source> якщо src порожній
+                    if not src or src.startswith('blob:'):
+                        source_els = audio_el.find_elements(By.TAG_NAME, 'source')
+                        for source_el in source_els:
+                            s = source_el.get_attribute('src') or ''
+                            if 'cdninstagram' in s or 'fbcdn' in s:
+                                src = s
+                                break
+                    # Тільки CDN URL
+                    if 'cdninstagram' not in src and 'fbcdn' not in src:
+                        continue
+                    logger.info(f"🎤 Знайдено голосове повідомлення: src={src[:80]}...")
+                    # Визначаємо відправника — піднімаємось до контейнера повідомлення
+                    is_from_user = self._is_message_from_user(audio_el, chat_username)
+                    y = audio_el.location.get('y', 0)
+                    all_messages.append({
+                        'content': '[Голосове]',
+                        'is_from_user': is_from_user,
+                        'element': audio_el,
+                        'message_type': 'voice',
+                        'image_src': None,
+                        'audio_src': src,
+                        'y_position': y,
+                        'timestamp': datetime.now()
+                    })
+                except Exception:
+                    continue
+
+            # Стратегія 2: Контейнери голосових (waveform/play button) без <audio>
+            # Instagram може рендерити voice notes через JS без <audio> тегу
+            if not any(m['message_type'] == 'voice' for m in all_messages):
+                voice_containers = self.driver.find_elements(
+                    By.XPATH,
+                    "//div[@role='button'][.//svg]"
+                    "[.//div[contains(@style,'animation') or contains(@style,'wave')]]"
+                )
+                if not voice_containers:
+                    # Альтернатива: шукаємо кнопку play поруч із waveform-подібними елементами
+                    voice_containers = self.driver.find_elements(
+                        By.XPATH,
+                        "//div[contains(@role,'slider') or contains(@aria-label,'Audio')]"
+                    )
+                for vc in voice_containers:
+                    try:
+                        # Шукаємо audio URL через data-атрибути або сусідні елементи
+                        audio_src = self.driver.execute_script("""
+                            var el = arguments[0];
+                            // Шукаємо <audio> в предках/сусідах
+                            var parent = el;
+                            for (var i = 0; i < 8; i++) {
+                                parent = parent.parentElement;
+                                if (!parent) break;
+                                var audio = parent.querySelector('audio');
+                                if (audio) {
+                                    var src = audio.src || '';
+                                    if (src && !src.startsWith('blob:')) return src;
+                                    var source = audio.querySelector('source');
+                                    if (source) return source.src || '';
+                                }
+                            }
+                            return '';
+                        """, vc)
+                        if audio_src and ('cdninstagram' in audio_src or 'fbcdn' in audio_src):
+                            is_from_user = self._is_message_from_user(vc, chat_username)
+                            y = vc.location.get('y', 0)
+                            all_messages.append({
+                                'content': '[Голосове]',
+                                'is_from_user': is_from_user,
+                                'element': vc,
+                                'message_type': 'voice',
+                                'image_src': None,
+                                'audio_src': audio_src,
+                                'y_position': y,
+                                'timestamp': datetime.now()
+                            })
+                            logger.info(f"🎤 Voice container знайдено: src={audio_src[:80]}...")
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"Помилка пошуку голосових: {e}")
+
         if not all_messages:
             logger.warning("Не знайдено повідомлень в чаті")
             return []
@@ -769,6 +858,52 @@ class DirectHandler:
 
         return None
 
+    def _download_audio(self, audio_src: str) -> bytes:
+        """
+        Завантажити голосове повідомлення з CDN.
+        Повертає raw bytes аудіо або None.
+        """
+        try:
+            selenium_cookies = self.driver.get_cookies()
+            cookies = {c['name']: c['value'] for c in selenium_cookies}
+            response = requests.get(
+                audio_src,
+                cookies=cookies,
+                headers={
+                    'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                    'Referer': 'https://www.instagram.com/',
+                },
+                timeout=15
+            )
+            if response.status_code == 200 and len(response.content) > 1000:
+                logger.info(f"🎤 Аудіо завантажено: {len(response.content)} байт")
+                return response.content
+            else:
+                logger.warning(f"🎤 Аудіо завантаження: статус {response.status_code}, {len(response.content)} байт")
+        except Exception as e:
+            logger.warning(f"🎤 Помилка завантаження аудіо: {e}")
+        return None
+
+    @staticmethod
+    def _detect_audio_mime(data: bytes) -> str:
+        """Визначити MIME-тип аудіо за magic bytes."""
+        if len(data) < 12:
+            return 'audio/mp4'
+        # OGG: starts with 'OggS'
+        if data[:4] == b'OggS':
+            return 'audio/ogg'
+        # MP3: starts with ID3 tag or sync word 0xFFxFB / 0xFFFB
+        if data[:3] == b'ID3' or data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
+            return 'audio/mpeg'
+        # WAV: starts with 'RIFF'
+        if data[:4] == b'RIFF':
+            return 'audio/wav'
+        # MP4/M4A/AAC: ftyp box (offset 4-7 = 'ftyp')
+        if data[4:8] == b'ftyp':
+            return 'audio/mp4'
+        # Default — MP4 (Instagram зазвичай використовує AAC в MP4 контейнері)
+        return 'audio/mp4'
+
     def hover_and_click_reply(self, message_element, chat_username: str = None) -> bool:
         """
         Навести мишку на повідомлення користувача і натиснути кнопку Reply.
@@ -990,9 +1125,10 @@ class DirectHandler:
                 logger.info("Вже оброблено в цій сесії")
                 return False
 
-            # 4. Об'єднуємо тексти + обробка зображень
+            # 4. Об'єднуємо тексти + обробка зображень/голосових
             text_parts = []
             image_data = None
+            audio_data = None
             message_type = 'text'
             for msg in unanswered:
                 if msg['message_type'] == 'image' and msg.get('image_src'):
@@ -1005,6 +1141,16 @@ class DirectHandler:
                         else:
                             logger.warning("📷 Не вдалося завантажити зображення!")
                     # Не додаємо "[Фото]" в текст
+                elif msg['message_type'] == 'voice' and msg.get('audio_src'):
+                    if not audio_data:
+                        logger.info(f"🎤 Завантажуємо голосове: {msg['audio_src'][:80]}...")
+                        audio_data = self._download_audio(msg['audio_src'])
+                        if audio_data:
+                            message_type = 'voice'
+                            logger.info(f"🎤 Голосове готове: {len(audio_data)} байт → відправимо в Gemini")
+                        else:
+                            logger.warning("🎤 Не вдалося завантажити голосове!")
+                    # Не додаємо "[Голосове]" в текст
                 else:
                     text_parts.append(msg['content'])
 
@@ -1012,6 +1158,10 @@ class DirectHandler:
                 combined_content = " ".join(text_parts)
                 if image_data:
                     combined_content += " (клієнт також прикріпив фото, опиши що на ньому)"
+                elif audio_data:
+                    combined_content += " (клієнт також надіслав голосове повідомлення, прослухай і врахуй)"
+            elif audio_data:
+                combined_content = "Клієнт надіслав голосове повідомлення. Прослухай і відповідай відповідно."
             else:
                 combined_content = "Клієнт надіслав фото товару. Опиши детально що зображено на фото (бренд, колір, тип товару) і допоможи з вибором."
 
@@ -1063,7 +1213,8 @@ class DirectHandler:
                         user_message=combined_content,
                         display_name=display_name,
                         message_type=message_type,
-                        image_data=image_data
+                        image_data=image_data,
+                        audio_data=audio_data
                     )
 
             if not response:

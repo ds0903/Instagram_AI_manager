@@ -183,7 +183,8 @@ class AIAgent:
     def generate_response(self, username: str, user_message: str,
                           display_name: str = None,
                           message_type: str = 'text',
-                          image_data: bytes = None) -> str:
+                          image_data: bytes = None,
+                          audio_data: bytes = None) -> str:
         """
         Генерація відповіді від AI.
 
@@ -234,6 +235,27 @@ class AIAgent:
                         ]
                     )
                 )
+            elif message_type == 'voice' and audio_data:
+                # Audio API - аналіз голосового повідомлення
+                text_prompt = user_message or "Клієнт надіслав голосове повідомлення. Прослухай і відповідай."
+                # Auto-detect audio mime type
+                mime = self._detect_audio_mime(audio_data)
+                logger.info(f"🎤 Відправляємо аудіо в Gemini: {len(audio_data)} байт, mime={mime}")
+                logger.info(f"🎤 Текстовий промпт до аудіо: '{text_prompt[:100]}'")
+                messages.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(text=text_prompt),
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type=mime,
+                                    data=audio_data
+                                )
+                            )
+                        ]
+                    )
+                )
             else:
                 # Звичайне текстове повідомлення
                 messages.append(
@@ -258,6 +280,8 @@ class AIAgent:
 
             if message_type == 'image':
                 logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
+            elif message_type == 'voice':
+                logger.info(f"🎤 AI Audio відповідь для {username}: {assistant_message[:200]}")
             else:
                 logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
 
@@ -279,6 +303,21 @@ class AIAgent:
                 self._notify_ai_error(f"Невідома помилка AI: {e}")
             return self.prompts.get('fallback', 'Вибачте, сталася помилка. Спробуйте ще раз.')
 
+    @staticmethod
+    def _detect_audio_mime(data: bytes) -> str:
+        """Визначити MIME-тип аудіо за magic bytes."""
+        if len(data) < 12:
+            return 'audio/mp4'
+        if data[:4] == b'OggS':
+            return 'audio/ogg'
+        if data[:3] == b'ID3' or data[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
+            return 'audio/mpeg'
+        if data[:4] == b'RIFF':
+            return 'audio/wav'
+        if data[4:8] == b'ftyp':
+            return 'audio/mp4'
+        return 'audio/mp4'
+
     def _notify_ai_error(self, error_msg: str):
         """Відправити сповіщення про помилку AI в Telegram"""
         try:
@@ -291,7 +330,8 @@ class AIAgent:
                         display_name: str = None,
                         message_type: str = 'text',
                         message_timestamp=None,
-                        image_data: bytes = None) -> str:
+                        image_data: bytes = None,
+                        audio_data: bytes = None) -> str:
         """
         Повний цикл обробки повідомлення:
         1. Збереження user message в DB
@@ -354,7 +394,8 @@ class AIAgent:
                     user_message=content,
                     display_name=display_name,
                     message_type=message_type,
-                    image_data=image_data
+                    image_data=image_data,
+                    audio_data=audio_data
                 )
 
         # 7. Зберігаємо відповідь асистента
