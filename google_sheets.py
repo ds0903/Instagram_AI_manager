@@ -1,10 +1,11 @@
 """
 Google Sheets Manager - База знань для Instagram AI Agent
-Аркуші:
-- Каталог (товари: назва, артикул, ціна, склад, опис, фото)
+Аркуші (опціональні, крім Каталогу):
+- Каталог (товари: назва, матеріал, ціна, кольори, розміри, опис)
 - Шаблони (скелети відповідей у фірмовому стилі)
 - Логіка (поведінка у стандартних ситуаціях)
 - Складні_питання (обробка складних запитань)
+Якщо аркуш не існує — пропускається, AI працює самостійно.
 """
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -298,214 +299,98 @@ class GoogleSheetsManager:
     # ==================== ШАБЛОНИ ====================
 
     def get_templates(self) -> dict:
-        """
-        Отримати шаблони відповідей з аркуша "Шаблони"
-
-        Колонки: Назва шаблону | Текст
-
-        Returns:
-            dict: {назва_шаблону: текст}
-        """
+        """Отримати шаблони відповідей з аркуша 'Шаблони'. Якщо немає — повертає {}."""
         try:
             worksheet = self.spreadsheet.worksheet("Шаблони")
             data = worksheet.get_all_values()
-
             templates = {}
             for row in data[1:]:
                 if len(row) >= 2 and row[0] and row[1]:
-                    template_name = row[0].strip()
-                    template_text = row[1]
-                    templates[template_name] = template_text
-
+                    templates[row[0].strip()] = row[1]
             logger.info(f"Завантажено {len(templates)} шаблонів")
             return templates
-
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info("Аркуш 'Шаблони' не знайдено — пропускаємо")
+            return {}
         except Exception as e:
-            logger.error(f"Помилка читання шаблонів: {e}")
+            logger.info(f"Аркуш 'Шаблони' недоступний: {e}")
             return {}
 
     # ==================== ЛОГІКА ПОВЕДІНКИ ====================
 
     def get_behavior_rules(self) -> list:
-        """
-        Отримати правила поведінки з аркуша "Логіка"
-
-        Колонки: Ситуація | Тригери | Відповідь | Дія
-
-        Returns:
-            list: [{ситуація, тригери, відповідь, дія}, ...]
-        """
+        """Отримати правила поведінки з аркуша 'Логіка'. Якщо немає — повертає []."""
         try:
             worksheet = self.spreadsheet.worksheet("Логіка")
             data = worksheet.get_all_values()
-
             if len(data) < 2:
                 return []
-
             headers = data[0]
             rules = []
-
             for row in data[1:]:
                 if not row or not any(row):
                     continue
-
                 rule = {}
                 for i, header in enumerate(headers):
                     if i < len(row):
                         rule[header] = row[i]
-
-                # Парсимо тригери (через кому)
                 triggers_str = rule.get('Тригери', '')
                 rule['triggers_list'] = [t.strip().lower() for t in triggers_str.split(',') if t.strip()]
-
                 rules.append(rule)
-
             logger.info(f"Завантажено {len(rules)} правил поведінки")
             return rules
-
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info("Аркуш 'Логіка' не знайдено — пропускаємо")
+            return []
         except Exception as e:
-            logger.error(f"Помилка читання логіки: {e}")
+            logger.info(f"Аркуш 'Логіка' недоступний: {e}")
             return []
 
     def check_triggers(self, message: str) -> dict:
-        """
-        Перевірити чи є тригерні слова в повідомленні
-
-        Args:
-            message: Текст повідомлення
-
-        Returns:
-            dict: Правило яке спрацювало, або None
-        """
+        """Перевірити тригерні слова. Якщо аркуша немає — повертає None (AI відповість сама)."""
         rules = self.get_behavior_rules()
+        if not rules:
+            return None
         message_lower = message.lower().strip()
-
         for rule in rules:
-            triggers = rule.get('triggers_list', [])
-            for trigger in triggers:
+            for trigger in rule.get('triggers_list', []):
                 if trigger in message_lower:
-                    logger.info(f"Спрацював тригер '{trigger}' для ситуації '{rule.get('Ситуація')}'")
+                    logger.info(f"Спрацював тригер '{trigger}' → '{rule.get('Ситуація')}'")
                     return rule
-
         return None
 
     # ==================== СКЛАДНІ ПИТАННЯ ====================
 
     def get_complex_questions(self) -> dict:
-        """
-        Отримати відповіді на складні питання з аркуша "Складні_питання"
-
-        Колонки: Питання | Відповідь
-
-        Returns:
-            dict: {питання: відповідь}
-        """
+        """Отримати відповіді на складні питання з аркуша 'Складні_питання'. Якщо немає — повертає {}."""
         try:
             worksheet = self.spreadsheet.worksheet("Складні_питання")
             data = worksheet.get_all_values()
-
             questions = {}
             for row in data[1:]:
                 if len(row) >= 2 and row[0] and row[1]:
-                    question = row[0].strip().lower()
-                    answer = row[1]
-                    questions[question] = answer
-
+                    questions[row[0].strip().lower()] = row[1]
             logger.info(f"Завантажено {len(questions)} складних питань")
             return questions
-
+        except gspread.exceptions.WorksheetNotFound:
+            logger.info("Аркуш 'Складні_питання' не знайдено — пропускаємо")
+            return {}
         except Exception as e:
-            logger.error(f"Помилка читання складних питань: {e}")
+            logger.info(f"Аркуш 'Складні_питання' недоступний: {e}")
             return {}
 
     def find_answer_for_question(self, question: str) -> str:
-        """
-        Пошук відповіді на складне питання
-
-        Args:
-            question: Текст питання
-
-        Returns:
-            str: Відповідь або None
-        """
+        """Пошук відповіді на складне питання. Якщо немає — повертає None (AI відповість сама)."""
         questions = self.get_complex_questions()
+        if not questions:
+            return None
         question_lower = question.lower().strip()
-
         for stored_q, answer in questions.items():
             if question_lower in stored_q or stored_q in question_lower:
-                logger.info(f"Знайдено відповідь на питання")
                 return answer
-
         return None
 
-    # ==================== ЛОГУВАННЯ ====================
-
-    def log_unusual_question(self, username: str, question: str, context: str = "") -> bool:
-        """
-        Записати нестандартне питання в аркуш "Нестандартні_питання"
-
-        Args:
-            username: Instagram username
-            question: Текст питання
-            context: Контекст діалогу
-
-        Returns:
-            bool: True якщо успішно
-        """
-        try:
-            from datetime import datetime
-
-            worksheet = self.spreadsheet.worksheet("Нестандартні_питання")
-            now = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-            worksheet.append_row([now, f"@{username}", question, context])
-
-            logger.info(f"Нестандартне питання записано: '{question[:50]}...'")
-            return True
-
-        except Exception as e:
-            logger.error(f"Помилка запису питання: {e}")
-            return False
-
-    # ==================== ФОРМУВАННЯ ПОВІДОМЛЕНЬ ====================
-
-    def format_product_message(self, product: dict) -> str:
-        """
-        Форматувати повідомлення про товар
-
-        Args:
-            product: Дані товару
-
-        Returns:
-            str: Готове повідомлення
-        """
-        templates = self.get_templates()
-        template = templates.get('Товар', None)
-
-        if template:
-            try:
-                return template.format(**product)
-            except KeyError:
-                pass
-
-        # Дефолтний формат
-        name = product.get('Назва', '')
-        price = product.get('Ціна', '')
-        material = product.get('Склад', '')
-        sizes = product.get('Розміри', '')
-        description = product.get('Опис', '')
-
-        message = f"*{name}*\n"
-        if price:
-            message += f"Ціна: {price} грн\n"
-        if material:
-            message += f"Склад: {material}\n"
-        if sizes:
-            message += f"Розміри: {sizes}\n"
-        if description:
-            message += f"\n{description}"
-
-        return message
+    # ==================== КОНТЕКСТ ДЛЯ AI ====================
 
     def get_products_context_for_ai(self, query: str = None) -> str:
         """
@@ -612,30 +497,6 @@ def main():
                 print("    Ціни по розмірам:")
                 for price in prices:
                     print(f"      - {price.get('sizes')}: {price.get('price')}")
-
-    print("\n" + "-" * 60)
-    print("  ШАБЛОНИ")
-    print("-" * 60)
-
-    templates = gs.get_templates()
-    print(f"Знайдено {len(templates)} шаблонів")
-
-    if templates:
-        print("\nНазви шаблонів:")
-        for name in list(templates.keys())[:5]:
-            print(f"  - {name}")
-
-    print("\n" + "-" * 60)
-    print("  ЛОГІКА ПОВЕДІНКИ")
-    print("-" * 60)
-
-    rules = gs.get_behavior_rules()
-    print(f"Знайдено {len(rules)} правил")
-
-    if rules:
-        print("\nПерші 3 ситуації:")
-        for r in rules[:3]:
-            print(f"  - {r.get('Ситуація', 'N/A')}: тригери={r.get('triggers_list', [])}")
 
     print("\n" + "=" * 60)
     print("  ТЕСТ ЗАВЕРШЕНО!")

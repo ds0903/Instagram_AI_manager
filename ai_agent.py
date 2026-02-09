@@ -144,13 +144,39 @@ class AIAgent:
         return False
 
     def _check_behavior_rules(self, message: str) -> dict:
-        """Перевірити правила поведінки з Google Sheets."""
+        """Перевірити правила поведінки з Google Sheets. Якщо аркуша немає — повертає None."""
         if self.sheets_manager:
             try:
                 return self.sheets_manager.check_triggers(message)
-            except Exception as e:
-                logger.warning(f"Помилка перевірки правил: {e}")
+            except Exception:
+                pass
         return None
+
+    def _get_sheets_context(self, message: str) -> str:
+        """Отримати додатковий контекст з Google Sheets (шаблони, складні питання)."""
+        parts = []
+        if not self.sheets_manager:
+            return ""
+
+        # Шаблони відповідей
+        try:
+            templates = self.sheets_manager.get_templates()
+            if templates:
+                parts.append("Шаблони відповідей (використовуй якщо підходить):")
+                for name, text in templates.items():
+                    parts.append(f"  [{name}]: {text}")
+        except Exception:
+            pass
+
+        # Складні питання
+        try:
+            answer = self.sheets_manager.find_answer_for_question(message)
+            if answer:
+                parts.append(f"\nГотова відповідь на це питання: {answer}")
+        except Exception:
+            pass
+
+        return "\n".join(parts)
 
     def _extract_phone(self, message: str) -> str:
         """Витягнути телефон з повідомлення."""
@@ -206,6 +232,11 @@ class AIAgent:
             # Додаємо контекст про товари (якщо є запит)
             products_context = self._get_products_context(user_message)
             system_prompt += f"\n\n{products_context}"
+
+            # Додаємо контекст з Google Sheets (шаблони, складні питання)
+            sheets_context = self._get_sheets_context(user_message)
+            if sheets_context:
+                system_prompt += f"\n\n{sheets_context}"
 
             # Додаємо ім'я користувача в контекст
             if display_name:
@@ -389,14 +420,13 @@ class AIAgent:
                 'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
             response_text = escalation_note
         else:
-            # 5. Перевіряємо правила поведінки (Google Sheets)
+            # 5. Перевіряємо правила поведінки (Google Sheets, якщо є)
             behavior_rule = self._check_behavior_rules(content)
             if behavior_rule and behavior_rule.get('Відповідь'):
-                # Використовуємо відповідь з правила
                 response_text = behavior_rule.get('Відповідь')
                 logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
             else:
-                # 6. Генеруємо відповідь через AI
+                # 6. Генеруємо відповідь через AI (fallback)
                 response_text = self.generate_response(
                     username=username,
                     user_message=content,
