@@ -526,62 +526,94 @@ class DirectHandler:
 
         # === ПЕРЕСЛАННІ ПОСТИ/REELS (shared posts) ===
         # Ідентифікація: лінк з класом _a6hd — автор поста (Instagram-специфічний маркер)
-        # Всередині контейнера є: аватар автора, зображення поста, опис (caption)
+        # Фільтрація: тільки всередині повідомлень чату (є sender profile link + велике фото)
         try:
             post_links = self.driver.find_elements(By.CSS_SELECTOR, 'a._a6hd[role="link"]')
-            logger.info(f"📎 Пошук пересланих постів: знайдено {len(post_links)}")
+            seen_captions = set()  # Дедуплікація
 
+            valid_posts = 0
             for link_el in post_links:
                 try:
                     post_data = self.driver.execute_script("""
                         var link = arguments[0];
-                        var postAuthor = (link.getAttribute('href') || '').replace(/\\//g, '').trim();
+                        var href = link.getAttribute('href') || '';
 
-                        // Піднімаємось до контейнера повідомлення
+                        // Витягуємо username автора поста
+                        var postAuthor = href.replace(/^\\//, '').replace(/\\/$/, '').trim();
+
+                        // Фільтр: пропускаємо навігаційні лінки
+                        var navPaths = ['reels', 'explore', 'direct', 'directinbox',
+                                        'accounts', '#', '', 'p', 'stories'];
+                        if (navPaths.indexOf(postAuthor) !== -1) return null;
+                        if (postAuthor.includes('/')) return null;
+
+                        // Перевіряємо: лінк повинен бути всередині повідомлення чату
+                        // (має бути sender profile link в предках)
                         var container = link;
+                        var hasSenderLink = false;
                         for (var i = 0; i < 15; i++) {
                             container = container.parentElement;
                             if (!container) break;
-                            if (container.querySelector('a[aria-label^="Open the profile page"]')) break;
+                            if (container.querySelector('a[aria-label^="Open the profile page"]')) {
+                                hasSenderLink = true;
+                                break;
+                            }
                         }
+                        if (!hasSenderLink) return null;
 
-                        var caption = '';
+                        // Фото поста (>= 150px — не аватарка)
                         var imageUrl = '';
-
-                        if (container) {
-                            // Фото поста (>= 150px — не аватарка)
-                            var imgs = container.querySelectorAll('img');
-                            for (var k = 0; k < imgs.length; k++) {
-                                var w = parseInt(imgs[k].getAttribute('width') || '0');
-                                var h = parseInt(imgs[k].getAttribute('height') || '0');
-                                if (w >= 150 && h >= 150) {
-                                    imageUrl = imgs[k].src;
-                                    break;
-                                }
+                        var imgs = container.querySelectorAll('img');
+                        for (var k = 0; k < imgs.length; k++) {
+                            var w = parseInt(imgs[k].getAttribute('width') || '0');
+                            var h = parseInt(imgs[k].getAttribute('height') || '0');
+                            if (w >= 150 && h >= 150) {
+                                imageUrl = imgs[k].src;
+                                break;
                             }
+                        }
+                        if (!imageUrl) return null;  // Без фото — не пост
 
-                            // Текст опису — найдовший span (caption поста)
-                            var spans = container.querySelectorAll('span');
-                            var bestCaption = '';
-                            var bestLen = 0;
-                            for (var m = 0; m < spans.length; m++) {
-                                var text = spans[m].textContent.trim();
-                                if (text.length > bestLen && text.length > 20) {
-                                    bestCaption = text;
-                                    bestLen = text.length;
-                                }
+                        // Текст опису — шукаємо span з line-clamp (caption поста)
+                        var caption = '';
+                        var spans = container.querySelectorAll('span');
+                        var bestLen = 0;
+                        for (var m = 0; m < spans.length; m++) {
+                            var style = spans[m].getAttribute('style') || '';
+                            var text = spans[m].textContent.trim();
+                            // Пріоритет: span з line-clamp (точно caption)
+                            if (style.includes('line-clamp') && text.length > 20) {
+                                caption = text;
+                                break;
                             }
-                            caption = bestCaption;
+                            // Fallback: найдовший текст
+                            if (text.length > bestLen && text.length > 30) {
+                                bestLen = text.length;
+                                caption = text;
+                            }
                         }
 
                         return {postAuthor: postAuthor, caption: caption, imageUrl: imageUrl};
                     """, link_el)
 
-                    is_from_user = self._is_message_from_user(link_el, chat_username)
-                    y = link_el.location.get('y', 0)
+                    if not post_data:
+                        continue
 
                     post_author = post_data.get('postAuthor', '')
                     caption = post_data.get('caption', '')
+
+                    # Пропускаємо лінк нашого бота
+                    if post_author.lower() == self.bot_username:
+                        continue
+
+                    # Дедуплікація: один і той же пост — один запис
+                    dedup_key = f"{post_author}:{caption[:50]}"
+                    if dedup_key in seen_captions:
+                        continue
+                    seen_captions.add(dedup_key)
+
+                    is_from_user = self._is_message_from_user(link_el, chat_username)
+                    y = link_el.location.get('y', 0)
 
                     content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
 
@@ -595,11 +627,14 @@ class DirectHandler:
                         'y_position': y,
                         'timestamp': datetime.now()
                     })
+                    valid_posts += 1
                     logger.info(f"📎 Пост від @{post_author}, user={is_from_user}, caption: '{caption[:80]}...'")
 
                 except Exception as e:
                     logger.warning(f"📎 Помилка обробки поста: {e}")
                     continue
+
+            logger.info(f"📎 Пошук постів: {len(post_links)} лінків → {valid_posts} валідних постів")
         except Exception as e:
             logger.warning(f"Помилка пошуку постів: {e}")
 
