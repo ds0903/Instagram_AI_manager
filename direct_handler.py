@@ -524,6 +524,85 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку голосових: {e}")
 
+        # === ПЕРЕСЛАННІ ПОСТИ/REELS (shared posts) ===
+        # Ідентифікація: лінк з класом _a6hd — автор поста (Instagram-специфічний маркер)
+        # Всередині контейнера є: аватар автора, зображення поста, опис (caption)
+        try:
+            post_links = self.driver.find_elements(By.CSS_SELECTOR, 'a._a6hd[role="link"]')
+            logger.info(f"📎 Пошук пересланих постів: знайдено {len(post_links)}")
+
+            for link_el in post_links:
+                try:
+                    post_data = self.driver.execute_script("""
+                        var link = arguments[0];
+                        var postAuthor = (link.getAttribute('href') || '').replace(/\\//g, '').trim();
+
+                        // Піднімаємось до контейнера повідомлення
+                        var container = link;
+                        for (var i = 0; i < 15; i++) {
+                            container = container.parentElement;
+                            if (!container) break;
+                            if (container.querySelector('a[aria-label^="Open the profile page"]')) break;
+                        }
+
+                        var caption = '';
+                        var imageUrl = '';
+
+                        if (container) {
+                            // Фото поста (>= 150px — не аватарка)
+                            var imgs = container.querySelectorAll('img');
+                            for (var k = 0; k < imgs.length; k++) {
+                                var w = parseInt(imgs[k].getAttribute('width') || '0');
+                                var h = parseInt(imgs[k].getAttribute('height') || '0');
+                                if (w >= 150 && h >= 150) {
+                                    imageUrl = imgs[k].src;
+                                    break;
+                                }
+                            }
+
+                            // Текст опису — найдовший span (caption поста)
+                            var spans = container.querySelectorAll('span');
+                            var bestCaption = '';
+                            var bestLen = 0;
+                            for (var m = 0; m < spans.length; m++) {
+                                var text = spans[m].textContent.trim();
+                                if (text.length > bestLen && text.length > 20) {
+                                    bestCaption = text;
+                                    bestLen = text.length;
+                                }
+                            }
+                            caption = bestCaption;
+                        }
+
+                        return {postAuthor: postAuthor, caption: caption, imageUrl: imageUrl};
+                    """, link_el)
+
+                    is_from_user = self._is_message_from_user(link_el, chat_username)
+                    y = link_el.location.get('y', 0)
+
+                    post_author = post_data.get('postAuthor', '')
+                    caption = post_data.get('caption', '')
+
+                    content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
+
+                    all_messages.append({
+                        'content': content,
+                        'is_from_user': is_from_user,
+                        'element': link_el,
+                        'message_type': 'post_share',
+                        'image_src': post_data.get('imageUrl'),
+                        'post_author': post_author,
+                        'y_position': y,
+                        'timestamp': datetime.now()
+                    })
+                    logger.info(f"📎 Пост від @{post_author}, user={is_from_user}, caption: '{caption[:80]}...'")
+
+                except Exception as e:
+                    logger.warning(f"📎 Помилка обробки поста: {e}")
+                    continue
+        except Exception as e:
+            logger.warning(f"Помилка пошуку постів: {e}")
+
         if not all_messages:
             logger.warning("Не знайдено повідомлень в чаті")
             return []
@@ -1321,6 +1400,16 @@ class DirectHandler:
                     else:
                         logger.warning("🎤 Не вдалося отримати голосове!")
                     # Не додаємо "[Голосове]" в текст
+                elif msg['message_type'] == 'post_share':
+                    # Пересланий пост — caption вже в content, додаємо як текст
+                    text_parts.append(msg['content'])
+                    logger.info(f"📎 Пост додано в контекст: '{msg['content'][:80]}...'")
+                    # Завантажуємо фото поста (тільки URL, без кліку — щоб не відкрити пост)
+                    if msg.get('image_src') and not image_data:
+                        image_data = self._download_image(msg['image_src'])
+                        if image_data:
+                            message_type = 'image'
+                            logger.info(f"📎 Фото поста завантажено: {len(image_data)} байт")
                 else:
                     text_parts.append(msg['content'])
 
