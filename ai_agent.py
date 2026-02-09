@@ -184,7 +184,7 @@ class AIAgent:
                           display_name: str = None,
                           message_type: str = 'text',
                           image_data: bytes = None,
-                          audio_data: bytes = None) -> str:
+                          audio_data=None) -> str:
         """
         Генерація відповіді від AI.
 
@@ -194,6 +194,7 @@ class AIAgent:
             display_name: ім'я користувача (якщо відомо)
             message_type: 'text', 'image', 'voice', 'story_reply', 'post_share'
             image_data: дані зображення (для Vision API)
+            audio_data: bytes (одне аудіо) або list[bytes] (кілька голосових)
 
         Returns:
             Текст відповіді
@@ -212,6 +213,14 @@ class AIAgent:
 
             # Формуємо історію розмови
             messages = self._build_conversation_context(username)
+
+            # Нормалізуємо audio_data до списку
+            audio_list = []
+            if audio_data:
+                if isinstance(audio_data, list):
+                    audio_list = audio_data
+                else:
+                    audio_list = [audio_data]
 
             # Додаємо поточне повідомлення
             if message_type == 'image' and image_data:
@@ -235,26 +244,25 @@ class AIAgent:
                         ]
                     )
                 )
-            elif message_type == 'voice' and audio_data:
-                # Audio API - аналіз голосового повідомлення
+            elif message_type == 'voice' and audio_list:
+                # Audio API - аналіз голосових повідомлень (одне або кілька)
                 text_prompt = user_message or "Клієнт надіслав голосове повідомлення. Прослухай і відповідай."
-                # Auto-detect audio mime type
-                mime = self._detect_audio_mime(audio_data)
-                logger.info(f"🎤 Відправляємо аудіо в Gemini: {len(audio_data)} байт, mime={mime}")
-                logger.info(f"🎤 Текстовий промпт до аудіо: '{text_prompt[:100]}'")
-                messages.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(text=text_prompt),
-                            types.Part(
-                                inline_data=types.Blob(
-                                    mime_type=mime,
-                                    data=audio_data
-                                )
+                parts = [types.Part(text=text_prompt)]
+                for i, audio_bytes in enumerate(audio_list):
+                    mime = self._detect_audio_mime(audio_bytes)
+                    logger.info(f"🎤 Аудіо #{i+1}: {len(audio_bytes)} байт, mime={mime}")
+                    parts.append(
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type=mime,
+                                data=audio_bytes
                             )
-                        ]
+                        )
                     )
+                logger.info(f"🎤 Відправляємо {len(audio_list)} голосових в Gemini")
+                logger.info(f"🎤 Текстовий промпт: '{text_prompt[:100]}'")
+                messages.append(
+                    types.Content(role="user", parts=parts)
                 )
             else:
                 # Звичайне текстове повідомлення
@@ -281,7 +289,7 @@ class AIAgent:
             if message_type == 'image':
                 logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
             elif message_type == 'voice':
-                logger.info(f"🎤 AI Audio відповідь для {username}: {assistant_message[:200]}")
+                logger.info(f"🎤 AI Audio відповідь ({len(audio_list)} голосових) для {username}: {assistant_message[:200]}")
             else:
                 logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
 

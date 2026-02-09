@@ -1298,7 +1298,7 @@ class DirectHandler:
             # 4. Об'єднуємо тексти + обробка зображень/голосових
             text_parts = []
             image_data = None
-            audio_data = None
+            audio_data_list = []  # Список ВСІХ голосових (кожне окремо)
             message_type = 'text'
             for msg in unanswered:
                 if msg['message_type'] == 'image' and msg.get('image_src'):
@@ -1312,28 +1312,34 @@ class DirectHandler:
                             logger.warning("📷 Не вдалося завантажити зображення!")
                     # Не додаємо "[Фото]" в текст
                 elif msg['message_type'] == 'voice':
-                    if not audio_data:
-                        logger.info(f"🎤 Захоплюємо голосове повідомлення...")
-                        audio_data = self._capture_and_download_audio(msg['element'])
-                        if audio_data:
-                            message_type = 'voice'
-                            logger.info(f"🎤 Голосове готове: {len(audio_data)} байт → відправимо в Gemini")
-                        else:
-                            logger.warning("🎤 Не вдалося отримати голосове!")
+                    logger.info(f"🎤 Захоплюємо голосове повідомлення #{len(audio_data_list)+1}...")
+                    audio_bytes = self._capture_and_download_audio(msg['element'])
+                    if audio_bytes:
+                        audio_data_list.append(audio_bytes)
+                        message_type = 'voice'
+                        logger.info(f"🎤 Голосове #{len(audio_data_list)} готове: {len(audio_bytes)} байт")
+                    else:
+                        logger.warning("🎤 Не вдалося отримати голосове!")
                     # Не додаємо "[Голосове]" в текст
                 else:
                     text_parts.append(msg['content'])
 
+            voice_count = len(audio_data_list)
             if text_parts:
                 combined_content = " ".join(text_parts)
                 if image_data:
                     combined_content += " (клієнт також прикріпив фото, опиши що на ньому)"
-                elif audio_data:
-                    combined_content += " (клієнт також надіслав голосове повідомлення, прослухай і врахуй)"
-            elif audio_data:
-                combined_content = "Клієнт надіслав голосове повідомлення. Прослухай і відповідай відповідно."
-            else:
+                elif voice_count > 0:
+                    combined_content += f" (клієнт також надіслав {voice_count} голосових, прослухай і врахуй)"
+            elif voice_count > 0:
+                if voice_count == 1:
+                    combined_content = "Клієнт надіслав голосове повідомлення. Прослухай і відповідай відповідно."
+                else:
+                    combined_content = f"Клієнт надіслав {voice_count} голосових повідомлень. Прослухай кожне і відповідай на всі запитання."
+            elif image_data:
                 combined_content = "Клієнт надіслав фото товару. Опиши детально що зображено на фото (бренд, колір, тип товару) і допоможи з вибором."
+            else:
+                combined_content = "Клієнт надіслав повідомлення."
 
             logger.info(f"Об'єднаний текст для AI: '{combined_content[:100]}'")
 
@@ -1384,7 +1390,7 @@ class DirectHandler:
                         display_name=display_name,
                         message_type=message_type,
                         image_data=image_data,
-                        audio_data=audio_data
+                        audio_data=audio_data_list if audio_data_list else None
                     )
 
             if not response:
