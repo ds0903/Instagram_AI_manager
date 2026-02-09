@@ -471,7 +471,8 @@ class DirectHandler:
                         continue
 
                     logger.info(f"📷 Знайдено фото в чаті: {w}x{h}, src={src[:80]}...")
-                    is_from_user = self._is_message_from_user(img, chat_username)
+                    # Фото завжди від користувача — бот відповідає лише текстом
+                    is_from_user = True
                     y = img.location.get('y', 0)
                     all_messages.append({
                         'content': '[Фото]',
@@ -505,7 +506,8 @@ class DirectHandler:
 
             for waveform in voice_waveforms:
                 try:
-                    is_from_user = self._is_message_from_user(waveform, chat_username)
+                    # Голосове завжди від користувача — бот відповідає лише текстом
+                    is_from_user = True
                     y = waveform.location.get('y', 0)
                     all_messages.append({
                         'content': '[Голосове]',
@@ -612,7 +614,8 @@ class DirectHandler:
                         continue
                     seen_captions.add(dedup_key)
 
-                    is_from_user = self._is_message_from_user(link_el, chat_username)
+                    # Пост завжди від користувача — бот відповідає лише текстом
+                    is_from_user = True
                     y = link_el.location.get('y', 0)
 
                     content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
