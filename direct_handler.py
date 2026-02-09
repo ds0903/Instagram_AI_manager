@@ -526,9 +526,112 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку голосових: {e}")
 
+        # === ВІДПОВІДІ НА STORIES (story replies/shares) ===
+        # Ідентифікація: лінк _a6hd з href="/stories/username/..."
+        # Витягуємо: username автора сторіз, превʼю-зображення, текст "Shared X's story"
+        try:
+            story_links = self.driver.find_elements(
+                By.CSS_SELECTOR, 'a._a6hd[role="link"][href*="/stories/"]'
+            )
+            seen_stories = set()  # Дедуплікація
+
+            valid_stories = 0
+            for story_el in story_links:
+                try:
+                    story_data = self.driver.execute_script("""
+                        var link = arguments[0];
+                        var href = link.getAttribute('href') || '';
+
+                        // Витягуємо username автора сторіз з /stories/username/id...
+                        var match = href.match(/\\/stories\\/([^\\/\\?]+)/);
+                        if (!match) return null;
+                        var storyAuthor = match[1];
+
+                        // Превʼю зображення сторіз (thumbnail)
+                        var imageUrl = '';
+                        var imgs = link.querySelectorAll('img');
+                        for (var i = 0; i < imgs.length; i++) {
+                            var src = imgs[i].src || '';
+                            if (src.includes('cdninstagram') || src.includes('fbcdn')) {
+                                imageUrl = src;
+                                break;
+                            }
+                        }
+
+                        // Текст-індикатор ("Shared X's story" / "Відповідь на story")
+                        // Шукаємо в батьківському контейнері
+                        var container = link;
+                        for (var j = 0; j < 10; j++) {
+                            container = container.parentElement;
+                            if (!container) break;
+                        }
+                        var storyText = '';
+                        if (container) {
+                            var spans = container.querySelectorAll('span[dir="auto"]');
+                            for (var k = 0; k < spans.length; k++) {
+                                var text = spans[k].textContent.trim();
+                                if (text.toLowerCase().includes('story') ||
+                                    text.toLowerCase().includes('сторіз') ||
+                                    text.toLowerCase().includes('истори')) {
+                                    storyText = text;
+                                    break;
+                                }
+                            }
+                        }
+
+                        return {storyAuthor: storyAuthor, imageUrl: imageUrl, storyText: storyText};
+                    """, story_el)
+
+                    if not story_data:
+                        continue
+
+                    story_author = story_data.get('storyAuthor', '')
+                    image_url = story_data.get('imageUrl', '')
+                    story_text = story_data.get('storyText', '')
+
+                    # Пропускаємо сторіз нашого бота
+                    if story_author.lower() == self.bot_username:
+                        continue
+
+                    # Дедуплікація
+                    dedup_key = f"story:{story_author}"
+                    if dedup_key in seen_stories:
+                        continue
+                    seen_stories.add(dedup_key)
+
+                    # Сторіз завжди від користувача — бот відповідає лише текстом
+                    is_from_user = True
+                    y = story_el.location.get('y', 0)
+
+                    content = f"[Сторіз від @{story_author}]"
+                    if story_text:
+                        content += f": {story_text}"
+
+                    all_messages.append({
+                        'content': content,
+                        'is_from_user': is_from_user,
+                        'element': story_el,
+                        'message_type': 'story_reply',
+                        'image_src': image_url,
+                        'story_author': story_author,
+                        'y_position': y,
+                        'timestamp': datetime.now()
+                    })
+                    valid_stories += 1
+                    logger.info(f"📖 Сторіз від @{story_author}, img={'yes' if image_url else 'no'}, text: '{story_text[:60]}'")
+
+                except Exception as e:
+                    logger.warning(f"📖 Помилка обробки сторіз: {e}")
+                    continue
+
+            logger.info(f"📖 Пошук сторіз: {len(story_links)} лінків → {valid_stories} валідних")
+        except Exception as e:
+            logger.warning(f"Помилка пошуку сторіз: {e}")
+
         # === ПЕРЕСЛАННІ ПОСТИ/REELS (shared posts) ===
         # Ідентифікація: лінк з класом _a6hd — автор поста (Instagram-специфічний маркер)
         # Фільтрація: тільки всередині повідомлень чату (є sender profile link + велике фото)
+        # НЕ включає /stories/ — вони обробляються вище
         try:
             post_links = self.driver.find_elements(By.CSS_SELECTOR, 'a._a6hd[role="link"]')
             seen_captions = set()  # Дедуплікація
@@ -540,12 +643,15 @@ class DirectHandler:
                         var link = arguments[0];
                         var href = link.getAttribute('href') || '';
 
+                        // Пропускаємо сторіз — вони обробляються окремо
+                        if (href.includes('/stories/')) return null;
+
                         // Витягуємо username автора поста
                         var postAuthor = href.replace(/^\\//, '').replace(/\\/$/, '').trim();
 
                         // Фільтр: пропускаємо навігаційні лінки
                         var navPaths = ['reels', 'explore', 'direct', 'directinbox',
-                                        'accounts', '#', '', 'p', 'stories'];
+                                        'accounts', '#', '', 'p'];
                         if (navPaths.indexOf(postAuthor) !== -1) return null;
                         if (postAuthor.includes('/')) return null;
 
@@ -1438,6 +1544,16 @@ class DirectHandler:
                     else:
                         logger.warning("🎤 Не вдалося отримати голосове!")
                     # Не додаємо "[Голосове]" в текст
+                elif msg['message_type'] == 'story_reply':
+                    # Відповідь на сторіз — контекст + превʼю зображення
+                    text_parts.append(msg['content'])
+                    logger.info(f"📖 Сторіз додано в контекст: '{msg['content'][:80]}...'")
+                    # Завантажуємо превʼю сторіз (тільки URL, без кліку — сторіз може бути expired)
+                    if msg.get('image_src') and not image_data:
+                        image_data = self._download_image(msg['image_src'])
+                        if image_data:
+                            message_type = 'image'
+                            logger.info(f"📖 Превʼю сторіз завантажено: {len(image_data)} байт")
                 elif msg['message_type'] == 'post_share':
                     # Пересланий пост — caption вже в content, додаємо як текст
                     text_parts.append(msg['content'])
