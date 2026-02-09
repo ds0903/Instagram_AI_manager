@@ -926,34 +926,34 @@ class DirectHandler:
             audio_url = None
 
             # 4. Стратегія A: Resource Timing API (найнадійніша)
+            # Шукаємо в УСІХ ресурсах (аудіо може бути кешоване з попереднього відтворення)
             try:
-                new_resources = self.driver.execute_script("""
-                    var before = window.__audioResourcesBefore || 0;
+                all_resources = self.driver.execute_script("""
                     var all = performance.getEntriesByType('resource');
-                    var newOnes = all.slice(before);
                     var results = [];
-                    for (var i = 0; i < newOnes.length; i++) {
-                        results.push(newOnes[i].name);
+                    for (var i = 0; i < all.length; i++) {
+                        results.push(all[i].name);
                     }
                     return results;
                 """)
-                logger.info(f"🎤 Resource Timing: {len(new_resources)} нових ресурсів після Play")
-                for res_url in new_resources:
-                    if 'audioclip' in res_url or (
-                        'audio' in res_url.lower() and
-                        ('cdninstagram' in res_url or 'fbcdn' in res_url)
-                    ):
+                before_count = self.driver.execute_script(
+                    "return window.__audioResourcesBefore || 0;"
+                )
+                new_count = len(all_resources) - before_count
+                logger.info(f"🎤 Resource Timing: {len(all_resources)} всього, {new_count} нових після Play")
+
+                # Спочатку шукаємо audioclip в УСІХ ресурсах (включно з кешованими)
+                for res_url in all_resources:
+                    if 'audioclip' in res_url:
                         audio_url = res_url
-                        logger.info(f"🎤 Resource Timing захопив URL: {audio_url[:100]}...")
+                        logger.info(f"🎤 Resource Timing (audioclip): {audio_url[:120]}...")
                         break
-                # Якщо audioclip не знайдено — шукаємо будь-який медіа CDN
+
+                # Логуємо нові ресурси для дебагу
                 if not audio_url:
+                    new_resources = all_resources[before_count:]
                     for res_url in new_resources:
-                        if ('cdninstagram' in res_url or 'fbcdn' in res_url) and \
-                           '/t51.' not in res_url and '.jpg' not in res_url and '.png' not in res_url:
-                            audio_url = res_url
-                            logger.info(f"🎤 Resource Timing (CDN media): {audio_url[:100]}...")
-                            break
+                        logger.info(f"🎤   новий ресурс: {res_url[:120]}")
             except Exception as e:
                 logger.debug(f"🎤 Resource Timing помилка: {e}")
 
@@ -961,6 +961,7 @@ class DirectHandler:
             if not audio_url:
                 try:
                     logs = self.driver.get_log('performance')
+                    logger.info(f"🎤 CDP: {len(logs)} записів в performance logs")
                     for entry in logs:
                         try:
                             log_msg = json.loads(entry['message'])
@@ -970,14 +971,11 @@ class DirectHandler:
                                 url = ''
                                 if 'request' in params:
                                     url = params['request'].get('url', '')
-                                elif 'response' in params:
-                                    url = params['response'].get('url', '')
-                                if url and ('audioclip' in url or (
-                                    'audio' in url.lower() and
-                                    ('cdninstagram' in url or 'fbcdn' in url)
-                                )):
+                                if 'response' in params:
+                                    url = url or params['response'].get('url', '')
+                                if url and 'audioclip' in url:
                                     audio_url = url
-                                    logger.info(f"🎤 CDP logs захопив URL: {audio_url[:100]}...")
+                                    logger.info(f"🎤 CDP logs захопив URL: {audio_url[:120]}...")
                                     break
                         except Exception:
                             continue
