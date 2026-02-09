@@ -349,6 +349,9 @@ class InstagramBot:
         }
         options.add_experimental_option('prefs', prefs)
 
+        # Performance logging для CDP моніторингу мережі (захоплення аудіо голосових)
+        options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+
         logger.info(f"Запуск Chrome з профілем: {self.temp_profile_dir}")
 
         try:

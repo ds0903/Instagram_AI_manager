@@ -6,6 +6,7 @@ import os
 import time
 import random
 import logging
+import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -486,92 +487,40 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку зображень: {e}")
 
-        # === ГОЛОСОВІ ПОВІДОМЛЕННЯ (audio/voice notes) ===
+        # === ГОЛОСОВІ ПОВІДОМЛЕННЯ (voice notes) ===
+        # Instagram НЕ зберігає <audio> в DOM — аудіо завантажується при кліку Play.
+        # Тому шукаємо UI-маркери: waveform SVG або audio progress bar.
         try:
-            # Стратегія 1: <audio> елементи з CDN src
-            audio_elements = self.driver.find_elements(By.XPATH, "//audio")
-            logger.info(f"🎤 Пошук голосових: знайдено {len(audio_elements)} audio елементів")
-            for audio_el in audio_elements:
+            voice_waveforms = self.driver.find_elements(
+                By.XPATH,
+                "//svg[@aria-label='Waveform for audio message']"
+            )
+            if not voice_waveforms:
+                # Fallback: audio progress bar
+                voice_waveforms = self.driver.find_elements(
+                    By.XPATH,
+                    "//div[@aria-label='Audio progress bar']"
+                )
+            logger.info(f"🎤 Пошук голосових: знайдено {len(voice_waveforms)} голосових повідомлень")
+
+            for waveform in voice_waveforms:
                 try:
-                    src = audio_el.get_attribute('src') or ''
-                    # Перевіряємо вкладені <source> якщо src порожній
-                    if not src or src.startswith('blob:'):
-                        source_els = audio_el.find_elements(By.TAG_NAME, 'source')
-                        for source_el in source_els:
-                            s = source_el.get_attribute('src') or ''
-                            if 'cdninstagram' in s or 'fbcdn' in s:
-                                src = s
-                                break
-                    # Тільки CDN URL
-                    if 'cdninstagram' not in src and 'fbcdn' not in src:
-                        continue
-                    logger.info(f"🎤 Знайдено голосове повідомлення: src={src[:80]}...")
-                    # Визначаємо відправника — піднімаємось до контейнера повідомлення
-                    is_from_user = self._is_message_from_user(audio_el, chat_username)
-                    y = audio_el.location.get('y', 0)
+                    is_from_user = self._is_message_from_user(waveform, chat_username)
+                    y = waveform.location.get('y', 0)
                     all_messages.append({
                         'content': '[Голосове]',
                         'is_from_user': is_from_user,
-                        'element': audio_el,
+                        'element': waveform,
                         'message_type': 'voice',
                         'image_src': None,
-                        'audio_src': src,
+                        'audio_src': None,  # URL буде захоплено при кліку Play
                         'y_position': y,
                         'timestamp': datetime.now()
                     })
-                except Exception:
+                    logger.info(f"🎤 Голосове повідомлення знайдено, user={is_from_user}")
+                except Exception as e:
+                    logger.warning(f"🎤 Помилка обробки голосового: {e}")
                     continue
-
-            # Стратегія 2: Контейнери голосових (waveform/play button) без <audio>
-            # Instagram може рендерити voice notes через JS без <audio> тегу
-            if not any(m['message_type'] == 'voice' for m in all_messages):
-                voice_containers = self.driver.find_elements(
-                    By.XPATH,
-                    "//div[@role='button'][.//svg]"
-                    "[.//div[contains(@style,'animation') or contains(@style,'wave')]]"
-                )
-                if not voice_containers:
-                    # Альтернатива: шукаємо кнопку play поруч із waveform-подібними елементами
-                    voice_containers = self.driver.find_elements(
-                        By.XPATH,
-                        "//div[contains(@role,'slider') or contains(@aria-label,'Audio')]"
-                    )
-                for vc in voice_containers:
-                    try:
-                        # Шукаємо audio URL через data-атрибути або сусідні елементи
-                        audio_src = self.driver.execute_script("""
-                            var el = arguments[0];
-                            // Шукаємо <audio> в предках/сусідах
-                            var parent = el;
-                            for (var i = 0; i < 8; i++) {
-                                parent = parent.parentElement;
-                                if (!parent) break;
-                                var audio = parent.querySelector('audio');
-                                if (audio) {
-                                    var src = audio.src || '';
-                                    if (src && !src.startsWith('blob:')) return src;
-                                    var source = audio.querySelector('source');
-                                    if (source) return source.src || '';
-                                }
-                            }
-                            return '';
-                        """, vc)
-                        if audio_src and ('cdninstagram' in audio_src or 'fbcdn' in audio_src):
-                            is_from_user = self._is_message_from_user(vc, chat_username)
-                            y = vc.location.get('y', 0)
-                            all_messages.append({
-                                'content': '[Голосове]',
-                                'is_from_user': is_from_user,
-                                'element': vc,
-                                'message_type': 'voice',
-                                'image_src': None,
-                                'audio_src': audio_src,
-                                'y_position': y,
-                                'timestamp': datetime.now()
-                            })
-                            logger.info(f"🎤 Voice container знайдено: src={audio_src[:80]}...")
-                    except Exception:
-                        continue
         except Exception as e:
             logger.warning(f"Помилка пошуку голосових: {e}")
 
@@ -884,6 +833,229 @@ class DirectHandler:
             logger.warning(f"🎤 Помилка завантаження аудіо: {e}")
         return None
 
+    def _capture_and_download_audio(self, voice_element) -> bytes:
+        """
+        Захопити аудіо з голосового повідомлення Instagram.
+        Instagram не зберігає URL аудіо в DOM — він завантажується при натисканні Play.
+
+        Стратегії (в порядку надійності):
+        A. Resource Timing API — бачить ВСІ мережеві запити (включно з media engine)
+        B. CDP Network.enable + performance logs
+        C. JS monkey-patch HTMLMediaElement.src
+        D. Пошук <audio> в DOM після кліку Play
+        """
+        try:
+            # 1. Знаходимо кнопку Play (поруч з waveform)
+            play_btn = self.driver.execute_script("""
+                var el = arguments[0];
+                var parent = el;
+                for (var i = 0; i < 10; i++) {
+                    parent = parent.parentElement;
+                    if (!parent) break;
+                    var btns = parent.querySelectorAll('div[role="button"][aria-label]');
+                    for (var j = 0; j < btns.length; j++) {
+                        var label = (btns[j].getAttribute('aria-label') || '').toLowerCase();
+                        if (label.includes('воспроизвести') || label.includes('play') ||
+                            label.includes('відтворити')) {
+                            return btns[j];
+                        }
+                    }
+                }
+                return null;
+            """, voice_element)
+
+            if not play_btn:
+                logger.warning("🎤 Кнопка Play не знайдена")
+                return None
+
+            # 2. Готуємо перехоплення ПЕРЕД кліком Play
+
+            # 2a. Resource Timing API — знімок поточних ресурсів
+            self.driver.execute_script(
+                "window.__audioResourcesBefore = performance.getEntriesByType('resource').length;"
+            )
+
+            # 2b. CDP Network.enable
+            try:
+                self.driver.execute_cdp_cmd('Network.enable', {})
+            except Exception:
+                pass
+
+            # 2c. Очищаємо performance logs
+            try:
+                self.driver.get_log('performance')
+            except Exception:
+                pass
+
+            # 2d. JS monkey-patch (setAttribute + src setter)
+            self.driver.execute_script("""
+                window.__capturedAudioUrls = [];
+                if (!window.__audioInterceptorInstalled) {
+                    // Patch src setter
+                    var origDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+                    if (origDesc && origDesc.set) {
+                        Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+                            set: function(val) {
+                                if (val && typeof val === 'string') {
+                                    window.__capturedAudioUrls.push(val);
+                                }
+                                return origDesc.set.call(this, val);
+                            },
+                            get: origDesc.get
+                        });
+                    }
+                    // Patch setAttribute
+                    var origSetAttr = HTMLMediaElement.prototype.setAttribute;
+                    HTMLMediaElement.prototype.setAttribute = function(name, val) {
+                        if (name === 'src' && val && typeof val === 'string') {
+                            window.__capturedAudioUrls.push(val);
+                        }
+                        return origSetAttr.call(this, name, val);
+                    };
+                    window.__audioInterceptorInstalled = true;
+                } else {
+                    window.__capturedAudioUrls = [];
+                }
+            """)
+
+            # 3. Натискаємо Play
+            logger.info("🎤 Натискаємо Play для захоплення URL аудіо...")
+            play_btn.click()
+            time.sleep(3)
+
+            audio_url = None
+
+            # 4. Стратегія A: Resource Timing API (найнадійніша)
+            try:
+                new_resources = self.driver.execute_script("""
+                    var before = window.__audioResourcesBefore || 0;
+                    var all = performance.getEntriesByType('resource');
+                    var newOnes = all.slice(before);
+                    var results = [];
+                    for (var i = 0; i < newOnes.length; i++) {
+                        results.push(newOnes[i].name);
+                    }
+                    return results;
+                """)
+                logger.info(f"🎤 Resource Timing: {len(new_resources)} нових ресурсів після Play")
+                for res_url in new_resources:
+                    if 'audioclip' in res_url or (
+                        'audio' in res_url.lower() and
+                        ('cdninstagram' in res_url or 'fbcdn' in res_url)
+                    ):
+                        audio_url = res_url
+                        logger.info(f"🎤 Resource Timing захопив URL: {audio_url[:100]}...")
+                        break
+                # Якщо audioclip не знайдено — шукаємо будь-який медіа CDN
+                if not audio_url:
+                    for res_url in new_resources:
+                        if ('cdninstagram' in res_url or 'fbcdn' in res_url) and \
+                           '/t51.' not in res_url and '.jpg' not in res_url and '.png' not in res_url:
+                            audio_url = res_url
+                            logger.info(f"🎤 Resource Timing (CDN media): {audio_url[:100]}...")
+                            break
+            except Exception as e:
+                logger.debug(f"🎤 Resource Timing помилка: {e}")
+
+            # 5. Стратегія B: CDP performance logs
+            if not audio_url:
+                try:
+                    logs = self.driver.get_log('performance')
+                    for entry in logs:
+                        try:
+                            log_msg = json.loads(entry['message'])
+                            method = log_msg.get('message', {}).get('method', '')
+                            if method in ('Network.requestWillBeSent', 'Network.responseReceived'):
+                                params = log_msg['message']['params']
+                                url = ''
+                                if 'request' in params:
+                                    url = params['request'].get('url', '')
+                                elif 'response' in params:
+                                    url = params['response'].get('url', '')
+                                if url and ('audioclip' in url or (
+                                    'audio' in url.lower() and
+                                    ('cdninstagram' in url or 'fbcdn' in url)
+                                )):
+                                    audio_url = url
+                                    logger.info(f"🎤 CDP logs захопив URL: {audio_url[:100]}...")
+                                    break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"🎤 CDP logs недоступні: {e}")
+
+            # 6. Стратегія C: JS monkey-patch результати
+            if not audio_url:
+                try:
+                    captured = self.driver.execute_script("return window.__capturedAudioUrls || [];")
+                    logger.info(f"🎤 JS interceptor: {len(captured)} перехоплених URL")
+                    for url in captured:
+                        if 'audioclip' in url or 'cdninstagram' in url or 'fbcdn' in url:
+                            audio_url = url
+                            logger.info(f"🎤 JS interceptor захопив URL: {audio_url[:100]}...")
+                            break
+                except Exception:
+                    pass
+
+            # 7. Стратегія D: Пошук <audio> в DOM
+            if not audio_url:
+                try:
+                    audio_els = self.driver.find_elements(By.TAG_NAME, 'audio')
+                    logger.info(f"🎤 DOM пошук: знайдено {len(audio_els)} <audio> елементів")
+                    for audio_el in audio_els:
+                        src = audio_el.get_attribute('src') or ''
+                        if src and not src.startswith('blob:'):
+                            if 'cdninstagram' in src or 'fbcdn' in src:
+                                audio_url = src
+                                logger.info(f"🎤 DOM <audio>: {audio_url[:100]}...")
+                                break
+                        for source_el in audio_el.find_elements(By.TAG_NAME, 'source'):
+                            s = source_el.get_attribute('src') or ''
+                            if s and ('cdninstagram' in s or 'fbcdn' in s):
+                                audio_url = s
+                                break
+                        if audio_url:
+                            break
+                except Exception:
+                    pass
+
+            # 8. Ставимо на паузу
+            try:
+                pause_btn = self.driver.execute_script("""
+                    var el = arguments[0];
+                    var parent = el;
+                    for (var i = 0; i < 10; i++) {
+                        parent = parent.parentElement;
+                        if (!parent) break;
+                        var btns = parent.querySelectorAll('div[role="button"][aria-label]');
+                        for (var j = 0; j < btns.length; j++) {
+                            var label = (btns[j].getAttribute('aria-label') || '').toLowerCase();
+                            if (label.includes('пауза') || label.includes('pause') ||
+                                label.includes('воспроизвести') || label.includes('play') ||
+                                label.includes('відтворити')) {
+                                return btns[j];
+                            }
+                        }
+                    }
+                    return null;
+                """, voice_element)
+                if pause_btn:
+                    pause_btn.click()
+                    logger.info("🎤 Аудіо поставлено на паузу")
+            except Exception:
+                pass
+
+            if not audio_url:
+                logger.warning("🎤 Не вдалося захопити URL аудіо жодним способом")
+                return None
+
+            # 9. Завантажуємо аудіо
+            return self._download_audio(audio_url)
+
+        except Exception as e:
+            logger.error(f"🎤 Помилка захоплення аудіо: {e}")
+            return None
+
     @staticmethod
     def _detect_audio_mime(data: bytes) -> str:
         """Визначити MIME-тип аудіо за magic bytes."""
@@ -1141,15 +1313,15 @@ class DirectHandler:
                         else:
                             logger.warning("📷 Не вдалося завантажити зображення!")
                     # Не додаємо "[Фото]" в текст
-                elif msg['message_type'] == 'voice' and msg.get('audio_src'):
+                elif msg['message_type'] == 'voice':
                     if not audio_data:
-                        logger.info(f"🎤 Завантажуємо голосове: {msg['audio_src'][:80]}...")
-                        audio_data = self._download_audio(msg['audio_src'])
+                        logger.info(f"🎤 Захоплюємо голосове повідомлення...")
+                        audio_data = self._capture_and_download_audio(msg['element'])
                         if audio_data:
                             message_type = 'voice'
                             logger.info(f"🎤 Голосове готове: {len(audio_data)} байт → відправимо в Gemini")
                         else:
-                            logger.warning("🎤 Не вдалося завантажити голосове!")
+                            logger.warning("🎤 Не вдалося отримати голосове!")
                     # Не додаємо "[Голосове]" в текст
                 else:
                     text_parts.append(msg['content'])
