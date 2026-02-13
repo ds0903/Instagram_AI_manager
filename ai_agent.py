@@ -111,29 +111,15 @@ class AIAgent:
 
         return messages
 
-    def _get_products_context(self, query: str = None) -> str:
-        """Отримати контекст про товари для промпту (Google Sheets або DB)."""
-        # Спроба Google Sheets
+    def _get_products_context(self) -> str:
+        """Отримати ПОВНИЙ каталог товарів для промпту. AI сама шукає потрібний товар."""
         if self.sheets_manager:
             try:
-                return self.sheets_manager.get_products_context_for_ai(query)
+                return self.sheets_manager.get_products_context_for_ai()
             except Exception as e:
                 logger.warning(f"Помилка Google Sheets: {e}")
 
-        # Fallback на DB
-        if query:
-            products = self.db.search_products(query)
-        else:
-            products = []
-
-        if not products:
-            return "База товарів: (товари не знайдено за запитом)"
-
-        products_text = "Доступні товари:\n"
-        for p in products:
-            products_text += f"- {p['name']}: {p['price']} грн, розміри: {p.get('sizes', 'N/A')}, матеріал: {p.get('material', 'N/A')}\n"
-
-        return products_text
+        return "Каталог товарів недоступний."
 
     def _check_escalation(self, message: str) -> bool:
         """Перевірити чи потрібна ескалація (передача оператору)."""
@@ -335,8 +321,8 @@ class AIAgent:
             # Системний промпт
             system_prompt = self.prompts.get('system_prompt', '')
 
-            # Додаємо контекст про товари (якщо є запит)
-            products_context = self._get_products_context(user_message)
+            # Додаємо ПОВНИЙ каталог товарів (AI сама шукає потрібний товар)
+            products_context = self._get_products_context()
             system_prompt += f"\n\n{products_context}"
 
             # Додаємо контекст з Google Sheets (шаблони, складні питання)

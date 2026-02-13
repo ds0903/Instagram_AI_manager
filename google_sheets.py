@@ -173,10 +173,11 @@ class GoogleSheetsManager:
 
     def find_product_by_name(self, query: str) -> dict:
         """
-        Пошук товару за назвою (часткове співпадіння)
+        Пошук товару за назвою (часткове співпадіння в обидва боки).
+        Шукає і query в назві, і назву/ключові слова в query.
 
         Args:
-            query: Пошуковий запит
+            query: Пошуковий запит (може бути повне повідомлення користувача)
 
         Returns:
             dict: Дані товару або None
@@ -184,16 +185,35 @@ class GoogleSheetsManager:
         products = self.get_products()
         query_lower = query.lower().strip()
 
+        # 1. Прямий пошук: query в назві/артикулі/категорії
         for product in products:
-            name = product.get('Назва', '').lower()
+            name = product.get('Назва', product.get('Назва ', '')).lower()
             artikul = product.get('Артикул', '').lower()
             category = product.get('Категорія', '').lower()
 
             if query_lower in name or query_lower in artikul or query_lower in category:
-                logger.info(f"Знайдено товар: {product.get('Назва')}")
+                logger.info(f"Знайдено товар (прямий): {product.get('Назва', product.get('Назва '))}")
                 return product
 
-        logger.info(f"Товар не знайдено: {query}")
+        # 2. Зворотний пошук: назва товару або її ключові слова в query
+        for product in products:
+            name = product.get('Назва', product.get('Назва ', '')).lower().strip()
+            if not name:
+                continue
+
+            # Повна назва в query
+            if name in query_lower:
+                logger.info(f"Знайдено товар (назва в запиті): {product.get('Назва', product.get('Назва '))}")
+                return product
+
+            # Ключові слова з назви (без лапок, мін 3 символи)
+            name_words = [w.strip('"\'«»()') for w in name.split() if len(w.strip('"\'«»()')) >= 3]
+            for word in name_words:
+                if word in query_lower:
+                    logger.info(f"Знайдено товар (слово '{word}' в запиті): {product.get('Назва', product.get('Назва '))}")
+                    return product
+
+        logger.info(f"Товар не знайдено: {query[:80]}")
         return None
 
     def find_products_by_category(self, category: str) -> list:
@@ -437,56 +457,64 @@ class GoogleSheetsManager:
 
     def get_products_context_for_ai(self, query: str = None) -> str:
         """
-        Отримати контекст про товари для AI промпту
-
-        Args:
-            query: Пошуковий запит (опціонально)
+        Отримати ПОВНИЙ каталог товарів з усіма деталями для AI.
+        AI сама визначає який товар підходить під запит клієнта.
 
         Returns:
-            str: Текстовий опис товарів для промпту
+            str: Повний каталог товарів для system prompt
         """
-        if query:
-            # Шукаємо конкретні товари
-            product = self.find_product_by_name(query)
-            if product:
-                result = f"Знайдено товар: {product.get('Назва', product.get('Назва '))}\n"
-                result += f"Матеріал: {product.get('Матеріал', 'N/A')}\n"
-                result += f"Опис: {product.get('Опис товару', 'N/A')}\n"
-                result += f"Кольори: {product.get('Кольри', product.get('Кольори', 'N/A'))}\n"
-                result += f"Супутні товари: {product.get('Супутні товари', 'N/A')}\n"
+        products = self.get_products()
+        if not products:
+            return "Каталог товарів порожній."
 
-                # Ціни по розмірам
-                prices = product.get('prices_by_size', [])
-                if prices:
-                    result += "Ціни по розмірам:\n"
-                    for p in prices:
-                        price_str = p.get('price', '')
-                        try:
-                            price_num = int(''.join(filter(str.isdigit, price_str)))
-                            discount = int(price_num * 0.85)
-                            result += f"  - {p.get('sizes')}: {price_str} (зі знижкою 15%: {discount} грн)\n"
-                        except:
-                            result += f"  - {p.get('sizes')}: {price_str}\n"
+        logger.info(f"Завантажено {len(products)} товарів")
 
-                return result
+        result = "== ПОВНИЙ КАТАЛОГ ТОВАРІВ (шукай товар ТІЛЬКИ тут) ==\n\n"
+        for i, p in enumerate(products, 1):
+            name = p.get('Назва', p.get('Назва ', 'N/A'))
+            result += f"📦 {i}. {name}\n"
 
-            return "Товар не знайдено в каталозі."
-        else:
-            # Загальний список товарів
-            products = self.get_products()
-            if not products:
-                return "Каталог товарів порожній."
+            material = p.get('Матеріал', '')
+            if material:
+                result += f"   Матеріал: {material}\n"
 
-            result = "Доступні товари:\n"
-            for p in products:
-                name = p.get('Назва', p.get('Назва ', 'N/A'))
-                result += f"- {name}\n"
-                prices = p.get('prices_by_size', [])
-                if prices:
-                    for price_info in prices[:2]:  # Показуємо перші 2 ціни
-                        result += f"  {price_info.get('sizes')}: {price_info.get('price')}\n"
+            description = p.get('Опис товару', '')
+            if description:
+                result += f"   Опис: {description}\n"
 
-            return result
+            colors = p.get('Кольори', p.get('Кольри', ''))
+            if colors:
+                result += f"   Кольори: {colors}\n"
+
+            sizes = p.get('Доступні розміри', '')
+            if sizes:
+                result += f"   Розміри: {sizes}\n"
+
+            related = p.get('Супутні товари', '')
+            if related:
+                result += f"   Супутні товари: {related}\n"
+
+            note = p.get('Примітка', '')
+            if note:
+                result += f"   Примітка: {note}\n"
+
+            # Ціни по розмірам
+            prices = p.get('prices_by_size', [])
+            if prices:
+                result += "   Ціни:\n"
+                for pr in prices:
+                    price_str = pr.get('price', '')
+                    try:
+                        price_num = int(''.join(filter(str.isdigit, price_str)))
+                        discount = int(price_num * 0.85)
+                        result += f"     {pr.get('sizes')}: {price_str} (зі знижкою 15%: {discount} грн)\n"
+                    except Exception:
+                        result += f"     {pr.get('sizes')}: {price_str}\n"
+
+            result += "\n"
+
+        result += "== КІНЕЦЬ КАТАЛОГУ. Називай ТІЛЬКИ товари з цього списку! ==\n"
+        return result
 
 
 def main():
