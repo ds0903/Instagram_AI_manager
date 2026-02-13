@@ -80,6 +80,7 @@ class GoogleSheetsManager:
         - Акція - 15%
         - Супутні товари
         - Примітка
+        - Фото URL (опціонально — посилання на фото товару)
 
         Returns:
             list: [{назва, матеріал, ціна, ...}, ...]
@@ -388,6 +389,48 @@ class GoogleSheetsManager:
         for stored_q, answer in questions.items():
             if question_lower in stored_q or stored_q in question_lower:
                 return answer
+        return None
+
+    # ==================== ФОТО ТОВАРІВ ====================
+
+    def get_product_photo_url(self, product_name: str) -> str:
+        """
+        Знайти URL фото товару за назвою.
+        Шукає в колонці 'Фото URL' або 'Фото' аркуша 'Каталог'.
+
+        Args:
+            product_name: Назва товару (напр. 'Костюм "Харпер"')
+
+        Returns:
+            str: URL фото або None
+        """
+        products = self.get_products()
+        if not products:
+            return None
+
+        query_lower = product_name.lower().strip().strip('"\'«»')
+
+        for product in products:
+            name = product.get('Назва', product.get('Назва ', '')).lower().strip()
+            # Точне або часткове співпадіння
+            if query_lower in name or name in query_lower:
+                # Шукаємо URL фото в різних можливих колонках
+                photo_url = (
+                    product.get('Фото URL') or
+                    product.get('Фото') or
+                    product.get('Фото URL ') or
+                    product.get('Photo URL') or
+                    product.get('Зображення') or
+                    ''
+                ).strip()
+                if photo_url:
+                    logger.info(f"Знайдено фото для '{product_name}': {photo_url[:80]}")
+                    return photo_url
+                else:
+                    logger.info(f"Товар '{product_name}' знайдено, але фото URL відсутній")
+                    return None
+
+        logger.info(f"Товар '{product_name}' не знайдено для фото")
         return None
 
     # ==================== КОНТЕКСТ ДЛЯ AI ====================

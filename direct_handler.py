@@ -1423,6 +1423,185 @@ class DirectHandler:
             logger.error(f"Помилка відправки повідомлення: {e}")
             return False
 
+    def send_photo(self, image_path: str) -> bool:
+        """
+        Відправити фото в поточний чат Instagram DM.
+        Використовує прихований input[type='file'] для завантаження.
+
+        Args:
+            image_path: Абсолютний шлях до файлу зображення (JPG/PNG)
+
+        Returns:
+            True якщо фото відправлено
+        """
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"Файл не знайдено: {image_path}")
+                return False
+
+            # Стратегія 1: Шукаємо існуючий input[type='file'] (Instagram часто має прихований)
+            file_input = None
+            try:
+                inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+                if inputs:
+                    file_input = inputs[0]
+                    logger.info("Знайдено існуючий input[type='file']")
+            except Exception:
+                pass
+
+            # Стратегія 2: Клікаємо на іконку фото/зображення щоб з'явився input
+            if not file_input:
+                try:
+                    # SVG іконка фото в панелі DM (зазвичай поруч з текстовим полем)
+                    photo_btns = self.driver.find_elements(
+                        By.XPATH,
+                        "//div[@role='textbox']/ancestor::form//button | "
+                        "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg[contains(@aria-label,'photo') or contains(@aria-label,'image') or contains(@aria-label,'фото') or contains(@aria-label,'зображення') or contains(@aria-label,'Photo') or contains(@aria-label,'gallery') or contains(@aria-label,'Add')]/ancestor::button | "
+                        "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg[contains(@aria-label,'Photo')]/ancestor::div[@role='button']"
+                    )
+                    for btn in photo_btns:
+                        try:
+                            btn.click()
+                            time.sleep(1)
+                            break
+                        except Exception:
+                            continue
+
+                    # Після кліку шукаємо input знову
+                    inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+                    if inputs:
+                        file_input = inputs[0]
+                        logger.info("Знайдено input[type='file'] після кліку на іконку")
+                except Exception as e:
+                    logger.warning(f"Не вдалося знайти кнопку фото: {e}")
+
+            # Стратегія 3: Створюємо input через JavaScript (fallback)
+            if not file_input:
+                try:
+                    self.driver.execute_script("""
+                        var existingInputs = document.querySelectorAll('input[type="file"]');
+                        for (var i = 0; i < existingInputs.length; i++) {
+                            existingInputs[i].style.display = 'block';
+                            existingInputs[i].style.opacity = '1';
+                            existingInputs[i].style.position = 'fixed';
+                            existingInputs[i].style.top = '0';
+                            existingInputs[i].style.left = '0';
+                            existingInputs[i].style.zIndex = '99999';
+                        }
+                    """)
+                    time.sleep(0.5)
+                    inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+                    if inputs:
+                        file_input = inputs[0]
+                        logger.info("Зробили input[type='file'] видимим через JS")
+                except Exception as e:
+                    logger.warning(f"JS fallback не спрацював: {e}")
+
+            if not file_input:
+                logger.error("Не вдалося знайти input[type='file'] для завантаження фото")
+                return False
+
+            # Відправляємо файл через input
+            abs_path = os.path.abspath(image_path)
+            file_input.send_keys(abs_path)
+            logger.info(f"Файл завантажено: {abs_path}")
+
+            # Чекаємо поки з'явиться кнопка відправки або preview
+            time.sleep(2)
+
+            # Шукаємо кнопку Send/Надіслати
+            send_clicked = False
+            # Спосіб 1: Кнопка "Send" / "Надіслати"
+            try:
+                send_btns = self.driver.find_elements(
+                    By.XPATH,
+                    "//button[contains(text(),'Send') or contains(text(),'Надіслати') or contains(text(),'Отправить')]"
+                )
+                for btn in send_btns:
+                    if btn.is_displayed():
+                        btn.click()
+                        send_clicked = True
+                        break
+            except Exception:
+                pass
+
+            # Спосіб 2: div[role='button'] з текстом Send
+            if not send_clicked:
+                try:
+                    send_btns = self.driver.find_elements(
+                        By.XPATH,
+                        "//div[@role='button'][contains(.,'Send') or contains(.,'Надіслати')]"
+                    )
+                    for btn in send_btns:
+                        if btn.is_displayed():
+                            btn.click()
+                            send_clicked = True
+                            break
+                except Exception:
+                    pass
+
+            if send_clicked:
+                time.sleep(2)
+                logger.info(f"Фото відправлено: {image_path}")
+                return True
+            else:
+                # Якщо немає окремої кнопки — можливо фото вже в черзі і відправиться з Enter
+                logger.info("Кнопка Send не знайдена, можливо фото відправлено автоматично")
+                return True
+
+        except Exception as e:
+            logger.error(f"Помилка відправки фото: {e}")
+            return False
+
+    def send_photo_from_url(self, image_url: str) -> bool:
+        """
+        Завантажити фото з URL та відправити в чат.
+
+        Args:
+            image_url: URL зображення
+
+        Returns:
+            True якщо фото відправлено
+        """
+        try:
+            # Завантажуємо зображення
+            cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
+            headers = {'User-Agent': self.driver.execute_script("return navigator.userAgent")}
+            resp = requests.get(image_url, cookies=cookies, headers=headers, timeout=15)
+
+            if resp.status_code != 200 or len(resp.content) < 1000:
+                logger.warning(f"Не вдалося завантажити фото з URL: {resp.status_code}")
+                return False
+
+            # Визначаємо розширення
+            ext = '.jpg'
+            if resp.content[:4] == b'\x89PNG':
+                ext = '.png'
+
+            # Зберігаємо тимчасово
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix='ig_photo_')
+            tmp.write(resp.content)
+            tmp_path = tmp.name
+            tmp.close()
+
+            logger.info(f"Фото завантажено з URL: {len(resp.content)} байт → {tmp_path}")
+
+            # Відправляємо через send_photo
+            result = self.send_photo(tmp_path)
+
+            # Видаляємо тимчасовий файл
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Помилка завантаження/відправки фото з URL: {e}")
+            return False
+
     def get_chat_username(self) -> str:
         """
         Отримати username співрозмовника з відкритого чату.
@@ -1639,19 +1818,43 @@ class DirectHandler:
             if not response:
                 return False
 
-            # 10. Зберігаємо відповідь асистента в БД
+            # 10. Парсимо замовлення з відповіді AI (якщо є [ORDER]...[/ORDER])
+            order_data = self.ai_agent._parse_order(response)
+            if order_data:
+                self.ai_agent._process_order(
+                    username=username,
+                    display_name=display_name,
+                    order_data=order_data
+                )
+                # Видаляємо блок [ORDER] з тексту — клієнт не бачить
+                response = self.ai_agent._strip_order_block(response)
+
+            # 10.5. Парсимо фото маркери [PHOTO:назва_товару]
+            photo_markers = self.ai_agent._parse_photo_markers(response)
+            photo_urls = []
+            if photo_markers:
+                for product_name in photo_markers:
+                    url = self.ai_agent.get_product_photo_url(product_name)
+                    if url:
+                        photo_urls.append(url)
+                    else:
+                        logger.warning(f"Фото не знайдено для: {product_name}")
+                # Видаляємо маркери з тексту — клієнт не бачить
+                response = self.ai_agent._strip_photo_markers(response)
+
+            # 11. Зберігаємо відповідь асистента в БД (вже без маркерів)
             assistant_msg_id = self.ai_agent.db.add_assistant_message(
                 username=username,
                 content=response,
                 display_name=display_name
             )
 
-            # 11. Зв'язуємо ВСІ повідомлення користувача з ОДНІЄЮ відповіддю (answer_id)
+            # 12. Зв'язуємо ВСІ повідомлення користувача з ОДНІЄЮ відповіддю (answer_id)
             for msg_id in user_msg_ids:
                 self.ai_agent.db.update_answer_id(msg_id, assistant_msg_id)
             logger.info(f"Зв'язано {len(user_msg_ids)} повідомлень → answer #{assistant_msg_id}")
 
-            # 12. Сповіщення про нового ліда (перший контакт)
+            # 13. Сповіщення про нового ліда (перший контакт)
             lead = self.ai_agent.db.get_lead(username)
             if lead and lead.get('messages_count') == 1 and self.ai_agent.telegram:
                 self.ai_agent.telegram.notify_new_lead(
@@ -1661,13 +1864,22 @@ class DirectHandler:
                     products=combined_content[:100]
                 )
 
-            # 13. Hover + Reply на останнє повідомлення користувача
+            # 14. Hover + Reply на останнє повідомлення користувача
             msg_element = self._last_user_message_element
             if msg_element:
                 self.hover_and_click_reply(msg_element, chat_username=username)
 
-            # 14. Відправляємо відповідь
+            # 15. Відправляємо текстову відповідь
             success = self.send_message(response)
+
+            # 16. Відправляємо фото (якщо AI запросив через [PHOTO:...])
+            if photo_urls:
+                time.sleep(1)
+                for url in photo_urls:
+                    logger.info(f"Відправляємо фото: {url[:80]}")
+                    self.send_photo_from_url(url)
+                    time.sleep(1.5)  # Пауза між фото
+
             if success:
                 self.processed_messages.add(combined_key)
                 logger.info(f"Успішно відповіли {username}")

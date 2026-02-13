@@ -193,6 +193,111 @@ class AIAgent:
                 return match.group()
         return None
 
+    def _parse_order(self, response: str) -> dict:
+        """
+        Парсинг блоку [ORDER]...[/ORDER] з відповіді AI.
+        Повертає dict з даними замовлення або None.
+        """
+        match = re.search(r'\[ORDER\](.*?)\[/ORDER\]', response, re.DOTALL)
+        if not match:
+            return None
+
+        block = match.group(1).strip()
+        order = {}
+        for line in block.split('\n'):
+            line = line.strip()
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if key in ('піб', 'пiб', "ім'я", 'імя', 'name'):
+                    order['full_name'] = value
+                elif key in ('телефон', 'phone', 'тел'):
+                    order['phone'] = value
+                elif key in ('місто', 'city'):
+                    order['city'] = value
+                elif key in ('нп', 'нова пошта', 'відділення', 'nova_poshta'):
+                    order['nova_poshta'] = value
+                elif key in ('товари', 'товар', 'products'):
+                    order['products'] = value
+                elif key in ('сума', 'total', 'ціна'):
+                    order['total_price'] = value
+
+        if order.get('full_name') or order.get('phone'):
+            logger.info(f"Розпізнано замовлення: {order}")
+            return order
+        return None
+
+    def _strip_order_block(self, response: str) -> str:
+        """Видалити блок [ORDER]...[/ORDER] з тексту відповіді (клієнт не бачить)."""
+        return re.sub(r'\s*\[ORDER\].*?\[/ORDER\]\s*', '', response, flags=re.DOTALL).strip()
+
+    def _parse_photo_markers(self, response: str) -> list:
+        """
+        Парсинг маркерів [PHOTO:назва_товару] з відповіді AI.
+        Повертає список назв товарів для яких треба надіслати фото.
+        """
+        markers = re.findall(r'\[PHOTO:(.+?)\]', response)
+        if markers:
+            logger.info(f"Знайдено {len(markers)} фото маркерів: {markers}")
+        return markers
+
+    def _strip_photo_markers(self, response: str) -> str:
+        """Видалити маркери [PHOTO:...] з тексту відповіді (клієнт не бачить)."""
+        return re.sub(r'\s*\[PHOTO:.+?\]', '', response).strip()
+
+    def get_product_photo_url(self, product_name: str) -> str:
+        """Знайти URL фото товару через Google Sheets."""
+        if self.sheets_manager:
+            try:
+                return self.sheets_manager.get_product_photo_url(product_name)
+            except Exception as e:
+                logger.warning(f"Помилка пошуку фото: {e}")
+        return None
+
+    def _process_order(self, username: str, display_name: str, order_data: dict) -> int:
+        """
+        Зберегти замовлення в БД та відправити сповіщення в Telegram.
+        Повертає order_id.
+        """
+        # Парсимо суму (число з рядка)
+        total_price = None
+        if order_data.get('total_price'):
+            digits = ''.join(filter(str.isdigit, order_data['total_price']))
+            if digits:
+                total_price = float(digits)
+
+        # Зберігаємо замовлення в БД
+        order_id = self.db.create_order(
+            username=username,
+            display_name=display_name,
+            full_name=order_data.get('full_name'),
+            phone=order_data.get('phone'),
+            city=order_data.get('city'),
+            nova_poshta=order_data.get('nova_poshta'),
+            products=order_data.get('products'),
+            total_price=total_price
+        )
+        logger.info(f"Замовлення #{order_id} створено для {username}")
+
+        # Оновлюємо ліда з новими даними
+        self.db.create_or_update_lead(
+            username=username,
+            display_name=display_name,
+            phone=order_data.get('phone'),
+            city=order_data.get('city')
+        )
+
+        # Сповіщення в Telegram
+        if self.telegram:
+            self.telegram.notify_new_order(
+                username=username,
+                order_data=order_data
+            )
+            logger.info(f"Telegram сповіщення про замовлення #{order_id} відправлено")
+
+        return order_id
+
     def escalate_to_human(self, username: str, display_name: str,
                           reason: str, last_message: str) -> bool:
         """Відправити повідомлення про ескалацію в Telegram."""
