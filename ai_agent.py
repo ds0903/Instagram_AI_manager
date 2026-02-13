@@ -5,6 +5,7 @@ AI Agent - Gemini API інтеграція
 """
 import os
 import re
+import time
 import yaml
 import base64
 from google import genai
@@ -435,45 +436,87 @@ class AIAgent:
                     )
                 )
 
-            # Викликаємо Gemini API
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=1024
-                )
-            )
+            # Викликаємо Gemini API з retry (до 3 спроб при тимчасових помилках)
+            max_retries = 3
+            last_error = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = self.client.models.generate_content(
+                        model=self.model,
+                        contents=messages,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            max_output_tokens=1024
+                        )
+                    )
 
-            # Отримуємо текст відповіді
-            assistant_message = response.text
+                    # Отримуємо текст відповіді
+                    assistant_message = response.text
 
-            if message_type == 'image':
-                logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
-            elif message_type == 'voice':
-                logger.info(f"🎤 AI Audio відповідь ({len(audio_list)} голосових) для {username}: {assistant_message[:200]}")
-            elif message_type == 'story_media':
-                count = len(image_data) if isinstance(image_data, list) else 1
-                logger.info(f"📖 AI Story відповідь ({count} скріншотів) для {username}: {assistant_message[:200]}")
-            else:
-                logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
+                    if message_type == 'image':
+                        logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
+                    elif message_type == 'voice':
+                        logger.info(f"🎤 AI Audio відповідь ({len(audio_list)} голосових) для {username}: {assistant_message[:200]}")
+                    elif message_type == 'story_media':
+                        count = len(image_data) if isinstance(image_data, list) else 1
+                        logger.info(f"📖 AI Story відповідь ({count} скріншотів) для {username}: {assistant_message[:200]}")
+                    else:
+                        logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
 
-            return assistant_message
+                    return assistant_message
 
-        except Exception as e:
+                except Exception as api_err:
+                    last_error = api_err
+                    error_str = str(api_err).lower()
+                    # Retry тільки при тимчасових помилках (429, 500, 503)
+                    is_retryable = any(code in error_str for code in ['429', '500', '503', 'rate limit', 'unavailable', 'overloaded'])
+                    if is_retryable and attempt < max_retries:
+                        wait_sec = attempt * 5  # 5с, 10с
+                        logger.warning(f"⚠️ Gemini API помилка (спроба {attempt}/{max_retries}): {api_err}. Retry через {wait_sec}с...")
+                        time.sleep(wait_sec)
+                        continue
+                    else:
+                        break
+
+            # Всі спроби вичерпані або не-retryable помилка
+            e = last_error
             error_str = str(e).lower()
             if 'rate limit' in error_str or '429' in error_str:
-                logger.error(f"AI Rate Limit: {e}")
-                self._notify_ai_error(f"Rate Limit (токени/запити): {e}")
+                logger.error(f"AI Rate Limit (після {max_retries} спроб): {e}")
+                self._notify_ai_error(
+                    f"🚨 AI FALLBACK для @{username}\n"
+                    f"Помилка: Rate Limit\n"
+                    f"Спроб: {attempt}/{max_retries}\n"
+                    f"Тип: {message_type}\n"
+                    f"Клієнт отримав fallback-відповідь!\n"
+                    f"Деталі: {e}"
+                )
             elif 'authentication' in error_str or 'api key' in error_str or '401' in error_str:
                 logger.error(f"AI Auth Error: {e}")
-                self._notify_ai_error(f"Authentication Error (API key): {e}")
+                self._notify_ai_error(
+                    f"🚨 AI FALLBACK для @{username}\n"
+                    f"Помилка: Authentication Error (API key)\n"
+                    f"Клієнт отримав fallback-відповідь!\n"
+                    f"Деталі: {e}"
+                )
             elif '400' in error_str or '500' in error_str or '503' in error_str:
-                logger.error(f"AI API Error: {e}")
-                self._notify_ai_error(f"API Error: {e}")
+                logger.error(f"AI API Error (після {max_retries} спроб): {e}")
+                self._notify_ai_error(
+                    f"🚨 AI FALLBACK для @{username}\n"
+                    f"Помилка: API Error ({attempt} спроб)\n"
+                    f"Тип: {message_type}\n"
+                    f"Клієнт отримав fallback-відповідь!\n"
+                    f"Деталі: {e}"
+                )
             else:
                 logger.error(f"Помилка генерації відповіді: {e}")
-                self._notify_ai_error(f"Невідома помилка AI: {e}")
+                self._notify_ai_error(
+                    f"🚨 AI FALLBACK для @{username}\n"
+                    f"Невідома помилка\n"
+                    f"Тип: {message_type}\n"
+                    f"Клієнт отримав fallback-відповідь!\n"
+                    f"Деталі: {e}"
+                )
             return self.prompts.get('fallback', 'Вибачте, сталася помилка. Спробуйте ще раз.')
 
     @staticmethod
