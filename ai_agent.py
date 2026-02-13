@@ -361,7 +361,10 @@ class AIAgent:
             # Додаємо поточне повідомлення
             if message_type == 'image' and image_data:
                 # Vision API - аналіз зображення
-                text_prompt = user_message or "Що це за товар? Допоможіть з вибором."
+                text_prompt = user_message or (
+                    "Клієнт надіслав фото — розпізнай весь текст на зображенні"
+                    " (моделі, розміри, ціни), визнач товар і запропонуй з асортименту."
+                )
                 # Auto-detect mime type (screenshot = PNG, download = JPEG)
                 mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
                 logger.info(f"📷 Відправляємо зображення в Gemini Vision: {len(image_data)} байт, mime={mime}")
@@ -402,7 +405,10 @@ class AIAgent:
                 )
             elif message_type == 'story_media' and image_data and isinstance(image_data, list):
                 # Story screenshots - кілька зображень сторіз (фото або кадри відео)
-                text_prompt = user_message or "Клієнт відповів на сторіз. Проаналізуй зміст."
+                text_prompt = user_message or (
+                    "Клієнт відповів на сторіз. Розпізнай весь текст на скріншотах "
+                    "(моделі, розміри, ціни), визнач товар і запропонуй з асортименту."
+                )
                 parts = [types.Part(text=text_prompt)]
                 for i, screenshot in enumerate(image_data):
                     mime = "image/png"
