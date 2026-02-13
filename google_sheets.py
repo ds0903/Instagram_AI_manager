@@ -129,35 +129,49 @@ class GoogleSheetsManager:
                     current_product['prices_by_size'] = []
                     size_col = None
                     price_col = None
+                    discount_col = None
                     for i, h in enumerate(headers):
                         if 'розмір' in h.lower():
                             size_col = i
                         if 'ціна' in h.lower() and 'акція' not in h.lower():
                             price_col = i
+                        if 'акція' in h.lower():
+                            discount_col = i
 
                     if size_col is not None and price_col is not None:
                         if row[size_col] and row[price_col]:
+                            discount_val = ''
+                            if discount_col is not None and discount_col < len(row):
+                                discount_val = row[discount_col].strip()
                             current_product['prices_by_size'].append({
                                 'sizes': row[size_col],
-                                'price': row[price_col]
+                                'price': row[price_col],
+                                'discount': discount_val
                             })
 
                 elif current_product:
                     # Додатковий рядок з розмірами/цінами для поточного товару
                     size_col = None
                     price_col = None
+                    discount_col = None
                     for i, h in enumerate(headers):
                         if 'розмір' in h.lower():
                             size_col = i
                         if 'ціна' in h.lower() and 'акція' not in h.lower():
                             price_col = i
+                        if 'акція' in h.lower():
+                            discount_col = i
 
                     if size_col is not None and price_col is not None:
                         if len(row) > size_col and len(row) > price_col:
                             if row[size_col] and row[price_col]:
+                                discount_val = ''
+                                if discount_col is not None and discount_col < len(row):
+                                    discount_val = row[discount_col].strip()
                                 current_product['prices_by_size'].append({
                                     'sizes': row[size_col],
-                                    'price': row[price_col]
+                                    'price': row[price_col],
+                                    'discount': discount_val
                                 })
 
             # Додаємо останній товар
@@ -504,10 +518,21 @@ class GoogleSheetsManager:
                 result += "   Ціни:\n"
                 for pr in prices:
                     price_str = pr.get('price', '')
+                    discount_str = pr.get('discount', '').replace('%', '').strip()
                     try:
                         price_num = int(''.join(filter(str.isdigit, price_str)))
-                        discount = int(price_num * 0.85)
-                        result += f"     {pr.get('sizes')}: {price_str} (зі знижкою 15%: {discount} грн)\n"
+                        # Знижка з колонки "Акція" (0 або порожньо = без знижки)
+                        discount_pct = 0
+                        if discount_str:
+                            try:
+                                discount_pct = int(discount_str)
+                            except ValueError:
+                                pass
+                        if discount_pct > 0:
+                            discounted = int(price_num * (1 - discount_pct / 100))
+                            result += f"     {pr.get('sizes')}: {price_str} (акція -{discount_pct}%: {discounted} грн)\n"
+                        else:
+                            result += f"     {pr.get('sizes')}: {price_str}\n"
                     except Exception:
                         result += f"     {pr.get('sizes')}: {price_str}\n"
 

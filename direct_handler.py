@@ -40,6 +40,7 @@ class DirectHandler:
         self.driver = driver
         self.ai_agent = ai_agent
         self.processed_messages = set()  # Вже оброблені повідомлення
+        self._sent_photos = {}  # {username: set(photo_url)} — вже надіслані фото
         self._last_user_message_element = None  # Елемент останнього повідомлення користувача (для hover+reply)
         # Наш username акаунта (для визначення де чиє повідомлення)
         self.bot_username = os.getenv('BOT_USERNAME', '').strip().lower()
@@ -2299,10 +2300,18 @@ class DirectHandler:
 
             # 16. Відправляємо фото (якщо AI запросив через [PHOTO:...])
             if photo_urls:
+                # Ініціалізуємо трекер для юзера
+                if username not in self._sent_photos:
+                    self._sent_photos[username] = set()
+
                 time.sleep(1)
                 for url in photo_urls:
+                    if url in self._sent_photos[username]:
+                        logger.info(f"📷 Фото вже надсилали, пропускаємо: {url[:80]}")
+                        continue
                     logger.info(f"Відправляємо фото: {url[:80]}")
-                    self.send_photo_from_url(url)
+                    if self.send_photo_from_url(url):
+                        self._sent_photos[username].add(url)
                     time.sleep(1.5)  # Пауза між фото
 
             if success:
