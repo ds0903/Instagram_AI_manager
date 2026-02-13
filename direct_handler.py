@@ -530,6 +530,47 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку голосових: {e}")
 
+        # === ВІДЕО ПОВІДОМЛЕННЯ (video messages) ===
+        # Instagram показує <video> елементи в чаті для надісланих відео
+        try:
+            video_elements = self.driver.find_elements(
+                By.XPATH,
+                "//div[@role='presentation']//video | //div[contains(@class,'x78zum5')]//video"
+            )
+            # Фільтруємо: не голосові (голосові вже знайдені вище), мінімальний розмір
+            voice_y_positions = {m['y_position'] for m in all_messages if m['message_type'] == 'voice'}
+            logger.info(f"🎬 Пошук відео: знайдено {len(video_elements)} video елементів")
+
+            for video_el in video_elements:
+                try:
+                    y = video_el.location.get('y', 0)
+                    # Пропускаємо якщо це голосове (близька Y-позиція)
+                    is_voice = any(abs(y - vy) < 50 for vy in voice_y_positions)
+                    if is_voice:
+                        continue
+                    w = video_el.size.get('width', 0)
+                    h = video_el.size.get('height', 0)
+                    # Відео-повідомлення зазвичай більші за голосові
+                    if w < 80 or h < 80:
+                        continue
+
+                    is_from_user = True
+                    all_messages.append({
+                        'content': '[Відео]',
+                        'is_from_user': is_from_user,
+                        'element': video_el,
+                        'message_type': 'video',
+                        'image_src': None,
+                        'y_position': y,
+                        'timestamp': datetime.now()
+                    })
+                    logger.info(f"🎬 Відео повідомлення знайдено: {w}x{h}, user={is_from_user}")
+                except Exception as e:
+                    logger.warning(f"🎬 Помилка обробки відео: {e}")
+                    continue
+        except Exception as e:
+            logger.warning(f"Помилка пошуку відео: {e}")
+
         # === ВІДПОВІДІ НА STORIES (story replies/shares) ===
         # Ідентифікація: лінк _a6hd з href="/stories/username/..."
         # Витягуємо: username автора сторіз, превʼю-зображення, текст "Shared X's story"
@@ -858,9 +899,107 @@ class DirectHandler:
         except Exception:
             logger.warning("Не вдалося закрити viewer жодним способом")
 
+    def _screenshot_video_element(self, video_element, label: str = "відео") -> list:
+        """
+        Знімає скріншоти з <video> елемента кожні 5 сек + фінальний кадр.
+
+        Args:
+            video_element: Selenium WebElement <video>
+            label: мітка для логів (сторіз/пост/відео)
+
+        Returns:
+            list[bytes] — список PNG скріншотів
+        """
+        screenshots = []
+        try:
+            duration = self.driver.execute_script("return arguments[0].duration;", video_element)
+            if not duration or duration <= 0:
+                logger.warning(f"🎬 [{label}] Не вдалося отримати тривалість, робимо один скріншот")
+                screenshot = video_element.screenshot_as_png
+                if screenshot:
+                    screenshots.append(screenshot)
+                return screenshots
+
+            logger.info(f"🎬 [{label}] Тривалість: {duration:.1f} сек")
+            self.driver.execute_script("arguments[0].pause();", video_element)
+            time.sleep(0.3)
+
+            max_screenshots = 12
+            step = 5
+            current_time = 0
+            while current_time < duration and len(screenshots) < max_screenshots:
+                self.driver.execute_script(
+                    "arguments[0].currentTime = arguments[1];", video_element, current_time
+                )
+                time.sleep(0.5)
+                try:
+                    WebDriverWait(self.driver, 3).until(
+                        lambda d: d.execute_script(
+                            "return !arguments[0].seeking;", video_element
+                        )
+                    )
+                except Exception:
+                    time.sleep(1)
+
+                screenshot = video_element.screenshot_as_png
+                if screenshot:
+                    screenshots.append(screenshot)
+                    logger.info(f"🎬 [{label}] Скріншот @ {current_time:.0f}с ({len(screenshot)} байт)")
+
+                current_time += step
+
+            # Фінальний скріншот якщо ще не покрили кінець
+            last_captured = current_time - step
+            if last_captured + 2 < duration and len(screenshots) < max_screenshots:
+                final_time = max(duration - 0.5, 0)
+                self.driver.execute_script(
+                    "arguments[0].currentTime = arguments[1];", video_element, final_time
+                )
+                time.sleep(0.5)
+                try:
+                    WebDriverWait(self.driver, 3).until(
+                        lambda d: d.execute_script(
+                            "return !arguments[0].seeking;", video_element
+                        )
+                    )
+                except Exception:
+                    time.sleep(1)
+                screenshot = video_element.screenshot_as_png
+                if screenshot:
+                    screenshots.append(screenshot)
+                    logger.info(f"🎬 [{label}] Фінальний скріншот @ {final_time:.1f}с ({len(screenshot)} байт)")
+
+            logger.info(f"🎬 [{label}] Всього скріншотів: {len(screenshots)}")
+
+        except Exception as e:
+            logger.warning(f"🎬 [{label}] Помилка при захопленні відео: {e}")
+            try:
+                screenshot = video_element.screenshot_as_png
+                if screenshot:
+                    screenshots.append(screenshot)
+            except Exception:
+                pass
+
+        return screenshots
+
+    def _save_debug_screenshots(self, screenshots: list, username: str, label: str = "story"):
+        """Зберігає скріншоти локально якщо DEBUG увімкнено."""
+        if not self.DEBUG_SAVE_STORY_SCREENSHOTS or not screenshots:
+            return
+        try:
+            os.makedirs(self.STORY_SCREENSHOTS_DIR, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            for i, s in enumerate(screenshots):
+                path = os.path.join(self.STORY_SCREENSHOTS_DIR, f"{username}_{label}_{ts}_{i}.png")
+                with open(path, 'wb') as f:
+                    f.write(s)
+                logger.info(f"🎬 DEBUG: збережено {path} ({len(s)} байт)")
+        except Exception as e:
+            logger.warning(f"🎬 DEBUG: не вдалося зберегти скріншоти: {e}")
+
     def _capture_story_content(self, story_element, username: str = "unknown") -> list:
         """
-        Відкриває сторіз, робить скріншоти фото або відео (кожні 5 сек).
+        Відкриває сторіз, робить скріншоти фото або відео.
 
         Returns:
             list[bytes] — список PNG скріншотів (порожній якщо сторіз expired)
@@ -869,7 +1008,6 @@ class DirectHandler:
         current_url = self.driver.current_url
 
         try:
-            # 1. Клікаємо на сторіз
             logger.info("📖 Відкриваємо сторіз для захоплення контенту...")
             try:
                 story_element.click()
@@ -877,96 +1015,21 @@ class DirectHandler:
                 logger.warning(f"📖 Не вдалося клікнути на сторіз: {e}")
                 return screenshots
 
-            # 2. Чекаємо завантаження story viewer
             time.sleep(3)
 
-            # 3. Визначаємо тип контенту: відео чи фото
-            video_element = None
+            # Визначаємо тип: відео чи фото
+            video_el = None
             try:
-                video_element = self.driver.find_element(By.CSS_SELECTOR, "video")
+                video_el = self.driver.find_element(By.CSS_SELECTOR, "video")
                 logger.info("📖 Знайдено відео в сторіз")
             except Exception:
                 logger.info("📖 Відео не знайдено, це фото-сторіз")
 
-            if video_element:
-                # === ВІДЕО: знімаємо скріншоти кожні 5 секунд ===
-                try:
-                    # Отримуємо тривалість
-                    duration = self.driver.execute_script("return arguments[0].duration;", video_element)
-                    if not duration or duration <= 0:
-                        logger.warning("📖 Не вдалося отримати тривалість відео, робимо один скріншот")
-                        screenshot = video_element.screenshot_as_png
-                        if screenshot:
-                            screenshots.append(screenshot)
-                    else:
-                        logger.info(f"📖 Тривалість відео: {duration:.1f} сек")
-                        # Ставимо на паузу
-                        self.driver.execute_script("arguments[0].pause();", video_element)
-                        time.sleep(0.3)
-
-                        # Знімаємо скріншоти кожні 5 секунд (макс 12)
-                        max_screenshots = 12
-                        step = 5
-                        current_time = 0
-                        while current_time < duration and len(screenshots) < max_screenshots:
-                            # Перемотуємо
-                            self.driver.execute_script(
-                                "arguments[0].currentTime = arguments[1];", video_element, current_time
-                            )
-                            # Чекаємо seeked
-                            time.sleep(0.5)
-                            try:
-                                WebDriverWait(self.driver, 3).until(
-                                    lambda d: d.execute_script(
-                                        "return !arguments[0].seeking;", video_element
-                                    )
-                                )
-                            except Exception:
-                                time.sleep(1)
-
-                            screenshot = video_element.screenshot_as_png
-                            if screenshot:
-                                screenshots.append(screenshot)
-                                logger.info(f"📖 Скріншот відео @ {current_time:.0f}с ({len(screenshot)} байт)")
-
-                            current_time += step
-
-                        # Фінальний скріншот (останній кадр) якщо ще не покрили кінець
-                        last_captured = current_time - step
-                        if last_captured + 2 < duration and len(screenshots) < max_screenshots:
-                            final_time = max(duration - 0.5, 0)
-                            self.driver.execute_script(
-                                "arguments[0].currentTime = arguments[1];", video_element, final_time
-                            )
-                            time.sleep(0.5)
-                            try:
-                                WebDriverWait(self.driver, 3).until(
-                                    lambda d: d.execute_script(
-                                        "return !arguments[0].seeking;", video_element
-                                    )
-                                )
-                            except Exception:
-                                time.sleep(1)
-                            screenshot = video_element.screenshot_as_png
-                            if screenshot:
-                                screenshots.append(screenshot)
-                                logger.info(f"📖 Фінальний скріншот відео @ {final_time:.1f}с ({len(screenshot)} байт)")
-
-                        logger.info(f"📖 Всього скріншотів відео: {len(screenshots)}")
-
-                except Exception as e:
-                    logger.warning(f"📖 Помилка при захопленні відео: {e}")
-                    # Fallback: один скріншот
-                    try:
-                        screenshot = video_element.screenshot_as_png
-                        if screenshot:
-                            screenshots.append(screenshot)
-                    except Exception:
-                        pass
+            if video_el:
+                screenshots = self._screenshot_video_element(video_el, "сторіз")
             else:
-                # === ФОТО: один скріншот ===
+                # Фото: один скріншот
                 try:
-                    # Шукаємо основне зображення в story viewer
                     img_element = None
                     for selector in ["img[style*='object-fit']", "div[role='dialog'] img", "img[crossorigin]"]:
                         try:
@@ -975,7 +1038,6 @@ class DirectHandler:
                                 break
                         except Exception:
                             continue
-
                     if img_element:
                         screenshot = img_element.screenshot_as_png
                         if screenshot:
@@ -986,29 +1048,16 @@ class DirectHandler:
                 except Exception as e:
                     logger.warning(f"📖 Помилка при скріншоті фото: {e}")
 
-            # 4. DEBUG: зберігаємо скріншоти локально
-            if self.DEBUG_SAVE_STORY_SCREENSHOTS and screenshots:
-                try:
-                    os.makedirs(self.STORY_SCREENSHOTS_DIR, exist_ok=True)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    for i, s in enumerate(screenshots):
-                        path = os.path.join(self.STORY_SCREENSHOTS_DIR, f"{username}_{ts}_{i}.png")
-                        with open(path, 'wb') as f:
-                            f.write(s)
-                        logger.info(f"📖 DEBUG: збережено {path} ({len(s)} байт)")
-                except Exception as e:
-                    logger.warning(f"📖 DEBUG: не вдалося зберегти скріншоти: {e}")
+            self._save_debug_screenshots(screenshots, username, "story")
 
         except Exception as e:
             logger.error(f"📖 Помилка при захопленні сторіз: {e}")
         finally:
-            # 5. Закриваємо story viewer і повертаємося в чат
             try:
                 ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
                 time.sleep(1)
             except Exception:
                 pass
-
             try:
                 if self.driver.current_url != current_url:
                     self.driver.get(current_url)
@@ -1017,6 +1066,160 @@ class DirectHandler:
                 pass
 
         logger.info(f"📖 Результат захоплення сторіз: {len(screenshots)} скріншотів")
+        return screenshots
+
+    def _capture_post_content(self, post_element, username: str = "unknown") -> list:
+        """
+        Відкриває пост, робить скріншоти фото або відео.
+        Клікає на зображення-превʼю поста (не на лінк автора!).
+
+        Returns:
+            list[bytes] — список PNG скріншотів
+        """
+        screenshots = []
+        current_url = self.driver.current_url
+
+        try:
+            logger.info("📎 Відкриваємо пост для захоплення контенту...")
+
+            # Шукаємо зображення-превʼю поста в контейнері (піднімаємось по DOM)
+            clickable = None
+            container = post_element
+            for _ in range(10):
+                try:
+                    container = container.find_element(By.XPATH, "..")
+                except Exception:
+                    break
+                # Шукаємо img з CDN URL всередині контейнера
+                try:
+                    imgs = container.find_elements(By.TAG_NAME, "img")
+                    for img in imgs:
+                        src = img.get_attribute('src') or ''
+                        w = img.size.get('width', 0)
+                        h = img.size.get('height', 0)
+                        if ('cdninstagram' in src or 'fbcdn' in src) and w > 100 and h > 100:
+                            clickable = img
+                            logger.info(f"📎 Знайдено превʼю поста для кліку: {w}x{h}")
+                            break
+                except Exception:
+                    continue
+                if clickable:
+                    break
+
+            if not clickable:
+                logger.warning("📎 Не знайдено превʼю поста, клікаємо на елемент напряму")
+                clickable = post_element
+
+            try:
+                clickable.click()
+            except Exception as e:
+                logger.warning(f"📎 Не вдалося клікнути на пост: {e}")
+                return screenshots
+
+            time.sleep(3)
+
+            # Визначаємо тип: відео чи фото
+            video_el = None
+            try:
+                video_el = self.driver.find_element(By.CSS_SELECTOR, "div[role='dialog'] video, article video, video")
+                logger.info("📎 Знайдено відео в пості")
+            except Exception:
+                logger.info("📎 Відео не знайдено, це фото-пост")
+
+            if video_el:
+                screenshots = self._screenshot_video_element(video_el, "пост")
+            else:
+                # Фото: скріншот найбільшого зображення
+                try:
+                    img_element = None
+                    best_size = 0
+                    for selector in [
+                        "div[role='dialog'] img[style*='object-fit']",
+                        "div[role='dialog'] img[crossorigin]",
+                        "article img[style*='object-fit']",
+                        "article img",
+                    ]:
+                        try:
+                            imgs = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            for img in imgs:
+                                w = img.size.get('width', 0)
+                                h = img.size.get('height', 0)
+                                if w * h > best_size and w > 100 and h > 100:
+                                    best_size = w * h
+                                    img_element = img
+                        except Exception:
+                            continue
+
+                    if img_element:
+                        screenshot = img_element.screenshot_as_png
+                        if screenshot:
+                            screenshots.append(screenshot)
+                            logger.info(f"📎 Скріншот фото-поста: {len(screenshot)} байт")
+                    else:
+                        logger.warning("📎 Не знайдено зображення в пості")
+                except Exception as e:
+                    logger.warning(f"📎 Помилка при скріншоті поста: {e}")
+
+            self._save_debug_screenshots(screenshots, username, "post")
+
+        except Exception as e:
+            logger.error(f"📎 Помилка при захопленні поста: {e}")
+        finally:
+            try:
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                time.sleep(1)
+            except Exception:
+                pass
+            try:
+                if self.driver.current_url != current_url:
+                    self.driver.get(current_url)
+                    time.sleep(2)
+            except Exception:
+                pass
+
+        logger.info(f"📎 Результат захоплення поста: {len(screenshots)} скріншотів")
+        return screenshots
+
+    def _capture_inline_video(self, video_container, username: str = "unknown") -> list:
+        """
+        Знімає скріншоти з відео-повідомлення прямо в чаті (без кліку/навігації).
+
+        Returns:
+            list[bytes] — список PNG скріншотів
+        """
+        screenshots = []
+        try:
+            # Шукаємо <video> всередині контейнера або поруч
+            video_el = None
+            try:
+                video_el = video_container.find_element(By.TAG_NAME, "video")
+            except Exception:
+                # Піднімаємось по DOM
+                for _ in range(5):
+                    try:
+                        video_container = video_container.find_element(By.XPATH, "..")
+                        video_el = video_container.find_element(By.TAG_NAME, "video")
+                        break
+                    except Exception:
+                        continue
+
+            if not video_el:
+                logger.warning("🎬 Не знайдено <video> елемент в контейнері")
+                return screenshots
+
+            # Спочатку натискаємо play щоб відео завантажилось
+            try:
+                video_el.click()
+                time.sleep(1)
+            except Exception:
+                pass
+
+            screenshots = self._screenshot_video_element(video_el, "відео-чат")
+            self._save_debug_screenshots(screenshots, username, "video")
+
+        except Exception as e:
+            logger.error(f"🎬 Помилка при захопленні відео з чату: {e}")
+
         return screenshots
 
     def _download_image(self, img_src: str, img_element=None) -> bytes:
@@ -1910,15 +2113,38 @@ class DirectHandler:
                                     message_type = 'image'
                                     logger.info(f"📖 Превʼю сторіз завантажено: {len(image_data)} байт")
                 elif msg['message_type'] == 'post_share':
-                    # Пересланий пост — caption вже в content, додаємо як текст
+                    # Пересланий пост — відкриваємо і робимо скріншоти (може бути відео)
                     text_parts.append(msg['content'])
                     logger.info(f"📎 Пост додано в контекст: '{msg['content'][:80]}...'")
-                    # Завантажуємо фото поста (тільки URL, без кліку — щоб не відкрити пост)
-                    if msg.get('image_src') and not image_data:
-                        image_data = self._download_image(msg['image_src'])
-                        if image_data:
-                            message_type = 'image'
-                            logger.info(f"📎 Фото поста завантажено: {len(image_data)} байт")
+                    if not story_images_list:
+                        post_screenshots = self._capture_post_content(
+                            msg['element'], username=username
+                        )
+                        if post_screenshots:
+                            story_images_list = post_screenshots
+                            message_type = 'story_media'
+                            logger.info(f"📎 Захоплено {len(story_images_list)} скріншотів поста")
+                        else:
+                            # Fallback: завантажуємо thumbnail через URL
+                            logger.info("📎 Скріншоти поста не вдалися, пробуємо thumbnail...")
+                            if msg.get('image_src') and not image_data:
+                                image_data = self._download_image(msg['image_src'])
+                                if image_data:
+                                    message_type = 'image'
+                                    logger.info(f"📎 Превʼю поста завантажено: {len(image_data)} байт")
+                elif msg['message_type'] == 'video':
+                    # Відео повідомлення — знімаємо скріншоти
+                    logger.info("🎬 Захоплюємо відео повідомлення...")
+                    if not story_images_list:
+                        video_screenshots = self._capture_inline_video(
+                            msg['element'], username=username
+                        )
+                        if video_screenshots:
+                            story_images_list = video_screenshots
+                            message_type = 'story_media'
+                            logger.info(f"🎬 Захоплено {len(story_images_list)} скріншотів відео")
+                        else:
+                            logger.warning("🎬 Не вдалося захопити відео!")
                 else:
                     text_parts.append(msg['content'])
 
@@ -1927,9 +2153,9 @@ class DirectHandler:
                 combined_content = " ".join(text_parts)
                 if story_images_list:
                     combined_content += (
-                        f" (клієнт відповів на сторіз — уважно проаналізуй {len(story_images_list)} скріншотів:"
+                        f" (уважно проаналізуй {len(story_images_list)} скріншотів з медіа-контенту:"
                         " розпізнай ВЕСЬ текст на зображеннях (назви моделей, розміри, ціни, написи),"
-                        " визнач модель одягу/взуття та доступні розміри зі сторіз."
+                        " визнач модель одягу/взуття та доступні розміри."
                         " ВАЖЛИВО: називай ТІЛЬКИ ті товари що є в каталозі нижче!"
                         " Якщо такого товару НЕМАЄ в каталозі — чесно скажи що саме такої моделі немає"
                         " і запропонуй СХОЖИЙ товар тієї ж категорії з каталогу)"
