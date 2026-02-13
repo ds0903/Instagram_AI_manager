@@ -314,7 +314,7 @@ class AIAgent:
     def generate_response(self, username: str, user_message: str,
                           display_name: str = None,
                           message_type: str = 'text',
-                          image_data: bytes = None,
+                          image_data=None,
                           audio_data=None) -> str:
         """
         Генерація відповіді від AI.
@@ -323,8 +323,8 @@ class AIAgent:
             username: Instagram username
             user_message: текст повідомлення
             display_name: ім'я користувача (якщо відомо)
-            message_type: 'text', 'image', 'voice', 'story_reply', 'post_share'
-            image_data: дані зображення (для Vision API)
+            message_type: 'text', 'image', 'voice', 'story_media', 'story_reply', 'post_share'
+            image_data: bytes (одне фото) або list[bytes] (скріншоти сторіз)
             audio_data: bytes (одне аудіо) або list[bytes] (кілька голосових)
 
         Returns:
@@ -400,6 +400,26 @@ class AIAgent:
                 messages.append(
                     types.Content(role="user", parts=parts)
                 )
+            elif message_type == 'story_media' and image_data and isinstance(image_data, list):
+                # Story screenshots - кілька зображень сторіз (фото або кадри відео)
+                text_prompt = user_message or "Клієнт відповів на сторіз. Проаналізуй зміст."
+                parts = [types.Part(text=text_prompt)]
+                for i, screenshot in enumerate(image_data):
+                    mime = "image/png"
+                    logger.info(f"📖 Скріншот сторіз #{i+1}: {len(screenshot)} байт")
+                    parts.append(
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type=mime,
+                                data=screenshot
+                            )
+                        )
+                    )
+                logger.info(f"📖 Відправляємо {len(image_data)} скріншотів сторіз в Gemini Vision")
+                logger.info(f"📖 Текстовий промпт: '{text_prompt[:100]}'")
+                messages.append(
+                    types.Content(role="user", parts=parts)
+                )
             else:
                 # Звичайне текстове повідомлення
                 messages.append(
@@ -426,6 +446,9 @@ class AIAgent:
                 logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")
             elif message_type == 'voice':
                 logger.info(f"🎤 AI Audio відповідь ({len(audio_list)} голосових) для {username}: {assistant_message[:200]}")
+            elif message_type == 'story_media':
+                count = len(image_data) if isinstance(image_data, list) else 1
+                logger.info(f"📖 AI Story відповідь ({count} скріншотів) для {username}: {assistant_message[:200]}")
             else:
                 logger.info(f"Відповідь згенеровано для {username}: {assistant_message[:100]}...")
 

@@ -32,6 +32,10 @@ class DirectHandler:
     # [DEBUG] Фільтр — відповідаємо тільки цьому username (None = всім)
     DEBUG_ONLY_USERNAME = "Danyl"  # TODO: прибрати після дебагу (поставити None)
 
+    # [DEBUG] Зберігати скріншоти сторіз локально для перевірки
+    DEBUG_SAVE_STORY_SCREENSHOTS = True
+    STORY_SCREENSHOTS_DIR = "debug_story_screenshots"
+
     def __init__(self, driver, ai_agent):
         self.driver = driver
         self.ai_agent = ai_agent
@@ -853,6 +857,146 @@ class DirectHandler:
             logger.info("Viewer закрито через body.send_keys(ESC)")
         except Exception:
             logger.warning("Не вдалося закрити viewer жодним способом")
+
+    def _capture_story_content(self, story_element, username: str = "unknown") -> list:
+        """
+        Відкриває сторіз, робить скріншоти фото або відео (кожні 5 сек).
+
+        Returns:
+            list[bytes] — список PNG скріншотів (порожній якщо сторіз expired)
+        """
+        screenshots = []
+        current_url = self.driver.current_url
+
+        try:
+            # 1. Клікаємо на сторіз
+            logger.info("📖 Відкриваємо сторіз для захоплення контенту...")
+            try:
+                story_element.click()
+            except Exception as e:
+                logger.warning(f"📖 Не вдалося клікнути на сторіз: {e}")
+                return screenshots
+
+            # 2. Чекаємо завантаження story viewer
+            time.sleep(3)
+
+            # 3. Визначаємо тип контенту: відео чи фото
+            video_element = None
+            try:
+                video_element = self.driver.find_element(By.CSS_SELECTOR, "video")
+                logger.info("📖 Знайдено відео в сторіз")
+            except Exception:
+                logger.info("📖 Відео не знайдено, це фото-сторіз")
+
+            if video_element:
+                # === ВІДЕО: знімаємо скріншоти кожні 5 секунд ===
+                try:
+                    # Отримуємо тривалість
+                    duration = self.driver.execute_script("return arguments[0].duration;", video_element)
+                    if not duration or duration <= 0:
+                        logger.warning("📖 Не вдалося отримати тривалість відео, робимо один скріншот")
+                        screenshot = video_element.screenshot_as_png
+                        if screenshot:
+                            screenshots.append(screenshot)
+                    else:
+                        logger.info(f"📖 Тривалість відео: {duration:.1f} сек")
+                        # Ставимо на паузу
+                        self.driver.execute_script("arguments[0].pause();", video_element)
+                        time.sleep(0.3)
+
+                        # Знімаємо скріншоти кожні 5 секунд (макс 12)
+                        max_screenshots = 12
+                        step = 5
+                        current_time = 0
+                        while current_time < duration and len(screenshots) < max_screenshots:
+                            # Перемотуємо
+                            self.driver.execute_script(
+                                "arguments[0].currentTime = arguments[1];", video_element, current_time
+                            )
+                            # Чекаємо seeked
+                            time.sleep(0.5)
+                            try:
+                                WebDriverWait(self.driver, 3).until(
+                                    lambda d: d.execute_script(
+                                        "return !arguments[0].seeking;", video_element
+                                    )
+                                )
+                            except Exception:
+                                time.sleep(1)
+
+                            screenshot = video_element.screenshot_as_png
+                            if screenshot:
+                                screenshots.append(screenshot)
+                                logger.info(f"📖 Скріншот відео @ {current_time:.0f}с ({len(screenshot)} байт)")
+
+                            current_time += step
+
+                        logger.info(f"📖 Всього скріншотів відео: {len(screenshots)}")
+
+                except Exception as e:
+                    logger.warning(f"📖 Помилка при захопленні відео: {e}")
+                    # Fallback: один скріншот
+                    try:
+                        screenshot = video_element.screenshot_as_png
+                        if screenshot:
+                            screenshots.append(screenshot)
+                    except Exception:
+                        pass
+            else:
+                # === ФОТО: один скріншот ===
+                try:
+                    # Шукаємо основне зображення в story viewer
+                    img_element = None
+                    for selector in ["img[style*='object-fit']", "div[role='dialog'] img", "img[crossorigin]"]:
+                        try:
+                            img_element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            if img_element and img_element.size.get('width', 0) > 100:
+                                break
+                        except Exception:
+                            continue
+
+                    if img_element:
+                        screenshot = img_element.screenshot_as_png
+                        if screenshot:
+                            screenshots.append(screenshot)
+                            logger.info(f"📖 Скріншот фото-сторіз: {len(screenshot)} байт")
+                    else:
+                        logger.warning("📖 Не знайдено зображення в story viewer")
+                except Exception as e:
+                    logger.warning(f"📖 Помилка при скріншоті фото: {e}")
+
+            # 4. DEBUG: зберігаємо скріншоти локально
+            if self.DEBUG_SAVE_STORY_SCREENSHOTS and screenshots:
+                try:
+                    os.makedirs(self.STORY_SCREENSHOTS_DIR, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    for i, s in enumerate(screenshots):
+                        path = os.path.join(self.STORY_SCREENSHOTS_DIR, f"{username}_{ts}_{i}.png")
+                        with open(path, 'wb') as f:
+                            f.write(s)
+                        logger.info(f"📖 DEBUG: збережено {path} ({len(s)} байт)")
+                except Exception as e:
+                    logger.warning(f"📖 DEBUG: не вдалося зберегти скріншоти: {e}")
+
+        except Exception as e:
+            logger.error(f"📖 Помилка при захопленні сторіз: {e}")
+        finally:
+            # 5. Закриваємо story viewer і повертаємося в чат
+            try:
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                time.sleep(1)
+            except Exception:
+                pass
+
+            try:
+                if self.driver.current_url != current_url:
+                    self.driver.get(current_url)
+                    time.sleep(2)
+            except Exception:
+                pass
+
+        logger.info(f"📖 Результат захоплення сторіз: {len(screenshots)} скріншотів")
+        return screenshots
 
     def _download_image(self, img_src: str, img_element=None) -> bytes:
         """
@@ -1700,6 +1844,7 @@ class DirectHandler:
             # 4. Об'єднуємо тексти + обробка зображень/голосових
             text_parts = []
             image_data = None
+            story_images_list = []  # Список скріншотів сторіз (list[bytes])
             audio_data_list = []  # Список ВСІХ голосових (кожне окремо)
             message_type = 'text'
             for msg in unanswered:
@@ -1724,15 +1869,25 @@ class DirectHandler:
                         logger.warning("🎤 Не вдалося отримати голосове!")
                     # Не додаємо "[Голосове]" в текст
                 elif msg['message_type'] == 'story_reply':
-                    # Відповідь на сторіз — контекст + превʼю зображення
+                    # Відповідь на сторіз — відкриваємо і робимо скріншоти
                     text_parts.append(msg['content'])
                     logger.info(f"📖 Сторіз додано в контекст: '{msg['content'][:80]}...'")
-                    # Завантажуємо превʼю сторіз (тільки URL, без кліку — сторіз може бути expired)
-                    if msg.get('image_src') and not image_data:
-                        image_data = self._download_image(msg['image_src'])
-                        if image_data:
-                            message_type = 'image'
-                            logger.info(f"📖 Превʼю сторіз завантажено: {len(image_data)} байт")
+                    if not story_images_list:
+                        story_screenshots = self._capture_story_content(
+                            msg['element'], username=username
+                        )
+                        if story_screenshots:
+                            story_images_list = story_screenshots
+                            message_type = 'story_media'
+                            logger.info(f"📖 Захоплено {len(story_images_list)} скріншотів сторіз")
+                        else:
+                            # Fallback: завантажуємо thumbnail через URL
+                            logger.info("📖 Скріншоти не вдалися, пробуємо thumbnail...")
+                            if msg.get('image_src') and not image_data:
+                                image_data = self._download_image(msg['image_src'])
+                                if image_data:
+                                    message_type = 'image'
+                                    logger.info(f"📖 Превʼю сторіз завантажено: {len(image_data)} байт")
                 elif msg['message_type'] == 'post_share':
                     # Пересланий пост — caption вже в content, додаємо як текст
                     text_parts.append(msg['content'])
@@ -1749,7 +1904,9 @@ class DirectHandler:
             voice_count = len(audio_data_list)
             if text_parts:
                 combined_content = " ".join(text_parts)
-                if image_data:
+                if story_images_list:
+                    combined_content += f" (клієнт відповів на сторіз, проаналізуй {len(story_images_list)} скріншотів з відео/фото сторіз)"
+                elif image_data:
                     combined_content += " (клієнт також прикріпив фото, опиши що на ньому)"
                 elif voice_count > 0:
                     combined_content += f" (клієнт також надіслав {voice_count} голосових, прослухай і врахуй)"
@@ -1811,7 +1968,7 @@ class DirectHandler:
                         user_message=combined_content,
                         display_name=display_name,
                         message_type=message_type,
-                        image_data=image_data,
+                        image_data=story_images_list if story_images_list else image_data,
                         audio_data=audio_data_list if audio_data_list else None
                     )
 
