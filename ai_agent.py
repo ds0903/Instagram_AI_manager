@@ -519,6 +519,14 @@ class AIAgent:
                 )
             return self.prompts.get('fallback', 'Вибачте, сталася помилка. Спробуйте ще раз.')
 
+        except Exception as e:
+            logger.error(f"Критична помилка в generate_response: {e}")
+            self._notify_ai_error(
+                f"🚨 AI КРИТИЧНА ПОМИЛКА для @{username}\n"
+                f"Деталі: {e}"
+            )
+            return self.prompts.get('fallback', 'Вибачте, сталася помилка. Спробуйте ще раз.')
+
     @staticmethod
     def _detect_audio_mime(data: bytes) -> str:
         """Визначити MIME-тип аудіо за magic bytes."""
