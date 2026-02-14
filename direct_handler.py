@@ -2411,6 +2411,16 @@ class DirectHandler:
                 # Видаляємо блок [ORDER] з тексту — клієнт не бачить
                 response = self.ai_agent._strip_order_block(response)
 
+            # 10.3. Парсимо маркер [SAVE_QUESTION:...] — AI вирішила що це нове питання
+            import re as _re
+            save_q_match = _re.search(r'\[SAVE_QUESTION:(.*?)\]', response)
+            if save_q_match and self.ai_agent.sheets_manager:
+                question_text = save_q_match.group(1).strip()
+                if question_text:
+                    self.ai_agent.sheets_manager.save_unanswered_question(question_text, username)
+                # Видаляємо маркер з тексту — клієнт не бачить
+                response = _re.sub(r'\[SAVE_QUESTION:.*?\]', '', response).strip()
+
             # 10.5. Парсимо фото маркери [PHOTO:назва_товару]
             photo_markers = self.ai_agent._parse_photo_markers(response)
             photo_urls = []

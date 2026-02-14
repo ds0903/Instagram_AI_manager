@@ -140,7 +140,7 @@ class AIAgent:
         return None
 
     def _get_sheets_context(self, message: str, username: str = "") -> str:
-        """Отримати додатковий контекст з Google Sheets (шаблони, складні питання)."""
+        """Отримати додатковий контекст з Google Sheets (шаблони, складні питання, логіка)."""
         parts = []
         if not self.sheets_manager:
             return ""
@@ -155,14 +155,25 @@ class AIAgent:
         except Exception:
             pass
 
-        # Складні питання
+        # Логіка поведінки (ситуації + тригери + дії)
+        try:
+            rules = self.sheets_manager.get_behavior_rules()
+            if rules:
+                parts.append("\nПравила поведінки (Логіка):")
+                for rule in rules:
+                    situation = rule.get('Ситуація', '')
+                    triggers = rule.get('Тригери', '')
+                    response = rule.get('Відповідь', '')
+                    action = rule.get('Дія', '')
+                    parts.append(f"  [{situation}] тригери: {triggers} → {response} (дія: {action})")
+        except Exception:
+            pass
+
+        # Складні питання (готові відповіді)
         try:
             answer = self.sheets_manager.find_answer_for_question(message)
             if answer:
                 parts.append(f"\nГотова відповідь на це питання: {answer}")
-            else:
-                # Відповіді немає — зберігаємо питання для менеджера
-                self.sheets_manager.save_unanswered_question(message, username)
         except Exception:
             pass
 
