@@ -425,6 +425,35 @@ class GoogleSheetsManager:
                 return answer
         return None
 
+    def save_unanswered_question(self, question: str, username: str = "") -> bool:
+        """
+        Зберегти нове питання в аркуш 'Складні_питання' (колонка A).
+        Колонка B (відповідь) залишається порожньою — менеджер заповнить пізніше.
+        Дедуплікація: не додає якщо таке питання вже є.
+        """
+        try:
+            worksheet = self.spreadsheet.worksheet("Складні_питання")
+
+            # Перевіряємо чи таке питання вже є (дедуплікація)
+            existing = worksheet.col_values(1)  # Колонка A
+            question_stripped = question.strip()
+            for existing_q in existing:
+                if existing_q.strip().lower() == question_stripped.lower():
+                    logger.info(f"Питання вже є в Складні_питання: '{question_stripped[:60]}'")
+                    return False
+
+            # Додаємо нове питання (A=питання, B=порожньо, C=username)
+            worksheet.append_row([question_stripped, "", username])
+            logger.info(f"Збережено нове питання в Складні_питання: '{question_stripped[:60]}' (від {username})")
+            return True
+
+        except gspread.exceptions.WorksheetNotFound:
+            logger.warning("Аркуш 'Складні_питання' не знайдено — не можу зберегти питання")
+            return False
+        except Exception as e:
+            logger.warning(f"Помилка збереження питання: {e}")
+            return False
+
     # ==================== ФОТО ТОВАРІВ ====================
 
     def get_product_photo_url(self, product_name: str) -> str:

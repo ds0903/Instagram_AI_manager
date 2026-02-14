@@ -139,7 +139,7 @@ class AIAgent:
                 pass
         return None
 
-    def _get_sheets_context(self, message: str) -> str:
+    def _get_sheets_context(self, message: str, username: str = "") -> str:
         """Отримати додатковий контекст з Google Sheets (шаблони, складні питання)."""
         parts = []
         if not self.sheets_manager:
@@ -160,6 +160,9 @@ class AIAgent:
             answer = self.sheets_manager.find_answer_for_question(message)
             if answer:
                 parts.append(f"\nГотова відповідь на це питання: {answer}")
+            else:
+                # Відповіді немає — зберігаємо питання для менеджера
+                self.sheets_manager.save_unanswered_question(message, username)
         except Exception:
             pass
 
@@ -326,7 +329,7 @@ class AIAgent:
             system_prompt += f"\n\n{products_context}"
 
             # Додаємо контекст з Google Sheets (шаблони, складні питання)
-            sheets_context = self._get_sheets_context(user_message)
+            sheets_context = self._get_sheets_context(user_message, username=username)
             if sheets_context:
                 system_prompt += f"\n\n{sheets_context}"
 
