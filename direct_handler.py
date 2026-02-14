@@ -444,9 +444,9 @@ class DirectHandler:
                 'timestamp': datetime.now()
             })
 
-        # === ЗОБРАЖЕННЯ (фото/скріншоти всередині повідомлень) ===
-        # Шукаємо ВСІ img на сторінці (фото можуть бути поза div[@role='presentation'])
-        # Фільтруємо по CDN URL, розміру, виключаємо аватарки
+        # === ЗОБРАЖЕННЯ та ВІДЕО-ПРЕВʼЮ (фото/скріншоти/відео всередині повідомлень) ===
+        # Instagram показує відео в DM як img-thumbnail + playButton.png (без <video> тегу!)
+        # Тому тут визначаємо: якщо є playButton поруч → це відео, інакше → фото
         try:
             all_page_imgs = self.driver.find_elements(
                 By.XPATH,
@@ -475,19 +475,65 @@ class DirectHandler:
                     if w < 100 or h < 100:
                         continue
 
-                    logger.info(f"📷 Знайдено фото в чаті: {w}x{h}, src={src[:80]}...")
-                    # Фото завжди від користувача — бот відповідає лише текстом
+                    # Перевіряємо чи це відео (playButton.png поруч або t15.3394-10 в URL)
+                    is_video = False
+                    try:
+                        is_video = self.driver.execute_script("""
+                            var img = arguments[0];
+                            // Піднімаємось до контейнера повідомлення (div[role='button'])
+                            var container = img;
+                            for (var i = 0; i < 10; i++) {
+                                container = container.parentElement;
+                                if (!container) break;
+                                if (container.getAttribute('role') === 'button') break;
+                                if (container.getAttribute('role') === 'grid') return false;
+                            }
+                            if (!container) return false;
+                            // Шукаємо playButton.png в контейнері
+                            var playBtn = container.querySelector('img[src*="playButton"]');
+                            if (playBtn) return true;
+                            // Також перевіряємо URL: t15.3394-10 = відео thumbnail
+                            var src = img.getAttribute('src') || '';
+                            if (src.indexOf('/t15.3394-10/') !== -1) return true;
+                            return false;
+                        """, img)
+                    except Exception:
+                        pass
+
                     is_from_user = True
                     y = img.location.get('y', 0)
-                    all_messages.append({
-                        'content': '[Фото]',
-                        'is_from_user': is_from_user,
-                        'element': img,
-                        'message_type': 'image',
-                        'image_src': src,
-                        'y_position': y,
-                        'timestamp': datetime.now()
-                    })
+
+                    if is_video:
+                        # Знаходимо клікабельний контейнер div[role='button'] для відео
+                        video_click_container = img
+                        try:
+                            video_click_container = img.find_element(
+                                By.XPATH, "./ancestor::div[@role='button']"
+                            )
+                        except Exception:
+                            pass
+
+                        logger.info(f"🎬 Знайдено ВІДЕО в чаті (через thumbnail+playButton): {w}x{h}, src={src[:80]}...")
+                        all_messages.append({
+                            'content': '[Відео]',
+                            'is_from_user': is_from_user,
+                            'element': video_click_container,
+                            'message_type': 'video',
+                            'image_src': src,
+                            'y_position': y,
+                            'timestamp': datetime.now()
+                        })
+                    else:
+                        logger.info(f"📷 Знайдено фото в чаті: {w}x{h}, src={src[:80]}...")
+                        all_messages.append({
+                            'content': '[Фото]',
+                            'is_from_user': is_from_user,
+                            'element': img,
+                            'message_type': 'image',
+                            'image_src': src,
+                            'y_position': y,
+                            'timestamp': datetime.now()
+                        })
                 except Exception:
                     continue
         except Exception as e:
@@ -531,27 +577,28 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"Помилка пошуку голосових: {e}")
 
-        # === ВІДЕО ПОВІДОМЛЕННЯ (video messages) ===
-        # Instagram показує <video> елементи в чаті для надісланих відео
+        # === ВІДЕО ПОВІДОМЛЕННЯ (video messages) — додатковий пошук <video> тегів ===
+        # Основний пошук відео тепер через thumbnail+playButton (вище).
+        # Цей блок — fallback для випадків коли <video> тег вже є в DOM.
         try:
             video_elements = self.driver.find_elements(
                 By.XPATH,
                 "//div[@role='presentation']//video | //div[contains(@class,'x78zum5')]//video"
             )
-            # Фільтруємо: не голосові (голосові вже знайдені вище), мінімальний розмір
+            # Y-позиції вже знайдених відео та голосових — для дедуплікації
             voice_y_positions = {m['y_position'] for m in all_messages if m['message_type'] == 'voice'}
-            logger.info(f"🎬 Пошук відео: знайдено {len(video_elements)} video елементів")
+            video_y_positions = {m['y_position'] for m in all_messages if m['message_type'] == 'video'}
+            logger.info(f"🎬 Пошук <video> тегів: знайдено {len(video_elements)} елементів")
 
             for video_el in video_elements:
                 try:
                     y = video_el.location.get('y', 0)
-                    # Пропускаємо якщо це голосове (близька Y-позиція)
-                    is_voice = any(abs(y - vy) < 50 for vy in voice_y_positions)
-                    if is_voice:
+                    # Пропускаємо якщо вже знайдено (через thumbnail або голосове)
+                    is_duplicate = any(abs(y - vy) < 50 for vy in voice_y_positions | video_y_positions)
+                    if is_duplicate:
                         continue
                     w = video_el.size.get('width', 0)
                     h = video_el.size.get('height', 0)
-                    # Відео-повідомлення зазвичай більші за голосові
                     if w < 80 or h < 80:
                         continue
 
@@ -565,7 +612,7 @@ class DirectHandler:
                         'y_position': y,
                         'timestamp': datetime.now()
                     })
-                    logger.info(f"🎬 Відео повідомлення знайдено: {w}x{h}, user={is_from_user}")
+                    logger.info(f"🎬 Відео (<video> тег) знайдено: {w}x{h}, user={is_from_user}")
                 except Exception as e:
                     logger.warning(f"🎬 Помилка обробки відео: {e}")
                     continue
@@ -1183,39 +1230,127 @@ class DirectHandler:
 
     def _capture_inline_video(self, video_container, username: str = "unknown") -> list:
         """
-        Знімає скріншоти з відео-повідомлення прямо в чаті (без кліку/навігації).
+        Знімає скріншоти з відео-повідомлення в чаті.
+
+        Стратегія (як для фото — відкриваємо full-size viewer):
+        1. Клік на контейнер (div[role='button'] батько) → відкривається overlay
+        2. Знаходимо <video> в overlay → скріншоти (початок, кожні 5 сек, кінець)
+        3. Закриваємо viewer (Escape)
+        Fallback: якщо viewer не відкрився — скріншотимо відео прямо в чаті
 
         Returns:
             list[bytes] — список PNG скріншотів
         """
         screenshots = []
+        viewer_opened = False
         try:
-            # Шукаємо <video> всередині контейнера або поруч
+            # === Стратегія 1: Клік на контейнер → full-size viewer ===
+            try:
+                # video_container вже є div[role='button'] (передано з get_user_messages)
+                # або сам video елемент — клікаємо напряму
+                click_target = video_container
+                role = None
+                try:
+                    role = video_container.get_attribute('role')
+                except Exception:
+                    pass
+                if role == 'button':
+                    logger.info("🎬 Клік на div[role='button'] контейнер відео...")
+                else:
+                    # Fallback: піднімаємось до div[role='button']
+                    try:
+                        click_target = video_container.find_element(
+                            By.XPATH, "./ancestor::div[@role='button']"
+                        )
+                        logger.info("🎬 Клік на div[role='button'] батька відео...")
+                    except Exception:
+                        logger.info("🎬 Клік на сам елемент відео...")
+
+                click_target.click()
+                time.sleep(2)
+
+                # Шукаємо <video> в overlay (повноекранний viewer)
+                # Overlay зазвичай містить більший video елемент
+                overlay_video = None
+                all_videos = self.driver.find_elements(By.TAG_NAME, "video")
+                logger.info(f"🎬 Після кліку: знайдено {len(all_videos)} video елементів")
+
+                if len(all_videos) > 0:
+                    # Шукаємо найбільший video (overlay показує повноекранне)
+                    best_video = None
+                    best_area = 0
+                    for v in all_videos:
+                        try:
+                            w = v.size.get('width', 0)
+                            h = v.size.get('height', 0)
+                            area = w * h
+                            logger.info(f"🎬   video: {w}x{h}, area={area}")
+                            if area > best_area:
+                                best_area = area
+                                best_video = v
+                        except Exception:
+                            continue
+
+                    if best_video and best_area > 10000:  # мінімум ~100x100
+                        overlay_video = best_video
+                        viewer_opened = True
+                        logger.info(f"🎬 Full-size video знайдено в overlay: area={best_area}")
+
+                if overlay_video:
+                    # Натискаємо play щоб відео завантажилось
+                    try:
+                        self.driver.execute_script("""
+                            var v = arguments[0];
+                            if (v.paused) v.play();
+                        """, overlay_video)
+                        time.sleep(1.5)
+                    except Exception:
+                        pass
+
+                    screenshots = self._screenshot_video_element(overlay_video, "відео-чат-fullsize")
+                    self._save_debug_screenshots(screenshots, username, "video")
+
+                    # Закриваємо viewer
+                    self._close_image_viewer()
+                    return screenshots
+                else:
+                    logger.warning("🎬 Overlay video не знайдено, закриваємо viewer")
+                    self._close_image_viewer()
+                    viewer_opened = False
+
+            except Exception as e:
+                logger.warning(f"🎬 Full-size viewer не вдався: {e}")
+                if viewer_opened:
+                    self._close_image_viewer()
+
+            # === Fallback: скріншотимо video прямо в чаті ===
+            logger.info("🎬 Fallback: скріншотимо відео прямо в чаті")
             video_el = None
             try:
                 video_el = video_container.find_element(By.TAG_NAME, "video")
             except Exception:
                 # Піднімаємось по DOM
+                container = video_container
                 for _ in range(5):
                     try:
-                        video_container = video_container.find_element(By.XPATH, "..")
-                        video_el = video_container.find_element(By.TAG_NAME, "video")
+                        container = container.find_element(By.XPATH, "..")
+                        video_el = container.find_element(By.TAG_NAME, "video")
                         break
                     except Exception:
                         continue
 
             if not video_el:
-                logger.warning("🎬 Не знайдено <video> елемент в контейнері")
+                logger.warning("🎬 Не знайдено <video> елемент (fallback)")
                 return screenshots
 
-            # Спочатку натискаємо play щоб відео завантажилось
+            # Натискаємо play
             try:
                 video_el.click()
                 time.sleep(1)
             except Exception:
                 pass
 
-            screenshots = self._screenshot_video_element(video_el, "відео-чат")
+            screenshots = self._screenshot_video_element(video_el, "відео-чат-inline")
             self._save_debug_screenshots(screenshots, username, "video")
 
         except Exception as e:
@@ -2317,6 +2452,14 @@ class DirectHandler:
             if success:
                 self.processed_messages.add(combined_key)
                 logger.info(f"Успішно відповіли {username}")
+
+            # 17. Одразу виходимо з чату в Direct (не висимо в переписці)
+            try:
+                logger.info(f"Виходимо з чату {username} → Direct")
+                self.driver.get('https://www.instagram.com/direct/')
+                time.sleep(2)
+            except Exception as e:
+                logger.warning(f"Не вдалося перейти в Direct після відповіді: {e}")
 
             return success
 
