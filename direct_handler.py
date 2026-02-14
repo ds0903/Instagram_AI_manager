@@ -2377,7 +2377,12 @@ class DirectHandler:
                     'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
             else:
                 # 8. Перевіряємо правила поведінки (Google Sheets)
-                behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
+                # Пропускаємо для медіа (voice/video/story) — їм потрібен AI-аналіз,
+                # а не шаблонна відповідь (тригери можуть false-positive на службові слова)
+                media_types = {'voice', 'image', 'video', 'story_media'}
+                behavior_rule = None
+                if message_type not in media_types:
+                    behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
                 if behavior_rule and behavior_rule.get('Відповідь'):
                     response = behavior_rule.get('Відповідь')
                     logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
