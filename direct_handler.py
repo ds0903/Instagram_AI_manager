@@ -500,7 +500,7 @@ class DirectHandler:
                     except Exception:
                         pass
 
-                    is_from_user = True
+                    is_from_user = self._is_message_from_user(img, chat_username)
                     y = img.location.get('y', 0)
 
                     if is_video:
@@ -557,8 +557,7 @@ class DirectHandler:
 
             for waveform in voice_waveforms:
                 try:
-                    # Голосове завжди від користувача — бот відповідає лише текстом
-                    is_from_user = True
+                    is_from_user = self._is_message_from_user(waveform, chat_username)
                     y = waveform.location.get('y', 0)
                     all_messages.append({
                         'content': '[Голосове]',
@@ -602,7 +601,7 @@ class DirectHandler:
                     if w < 80 or h < 80:
                         continue
 
-                    is_from_user = True
+                    is_from_user = self._is_message_from_user(video_el, chat_username)
                     all_messages.append({
                         'content': '[Відео]',
                         'is_from_user': is_from_user,
@@ -859,6 +858,10 @@ class DirectHandler:
         # Зберігаємо елемент останнього повідомлення для hover+reply
         self._last_user_message_element = user_messages[-1]['element'] if user_messages else None
 
+        # Зберігаємо Y-позицію останнього повідомлення бота (для фільтрації медіа)
+        assistant_messages = [m for m in all_messages if not m['is_from_user']]
+        self._last_assistant_y = assistant_messages[-1]['y_position'] if assistant_messages else 0
+
         if not user_messages:
             logger.warning("Не знайдено жодного повідомлення від користувача")
             return []
@@ -869,29 +872,42 @@ class DirectHandler:
     def _filter_unanswered(self, screen_messages: list, username: str) -> list:
         """
         Фільтрація: залишити тільки НЕВІДПОВІДЖЕНІ повідомлення.
-        Перевіряємо кожне повідомлення з екрану проти БД:
-        - Якщо content збігається і answer_id НЕ NULL → вже відповіли (пропускаємо)
-        - Якщо content не знайдено в БД або answer_id NULL → невідповіджене
-        (Логіка 1:1 з Dia_Travel_AI)
+
+        Текст: збіг content в БД + answer_id NOT NULL → вже відповіли.
+        Медіа ([Голосове], [Відео], [Фото]): контент завжди однаковий,
+        тому перевіряємо по Y-позиції: якщо медіа НИЖЧЕ останньої відповіді бота
+        на екрані → це нове повідомлення (бот ще не відповів на нього).
+        Це надійно працює незалежно від lazy loading.
         """
         db_history = self.ai_agent.db.get_conversation_history(username, limit=50)
+        media_labels = {'[Голосове]', '[Відео]', '[Фото]'}
+
+        # Y-позиція останньої відповіді бота (збережена в get_user_messages)
+        last_bot_y = getattr(self, '_last_assistant_y', 0)
+        logger.info(f"Фільтр: last_bot_y={last_bot_y}")
 
         unanswered = []
         for msg in screen_messages:
-            already_answered = False
-
-            for db_msg in db_history:
-                if db_msg['role'] != 'user':
-                    continue
-                if db_msg['content'] != msg['content']:
-                    continue
-                # Content збігається — перевіряємо answer_id
-                if db_msg.get('answer_id'):
-                    already_answered = True
-                break
-
-            if not already_answered:
-                unanswered.append(msg)
+            if msg['content'] in media_labels:
+                # Медіа — нове якщо НИЖЧЕ останньої відповіді бота (більша Y)
+                if msg['y_position'] > last_bot_y:
+                    logger.info(f"Медіа '{msg['content']}' y={msg['y_position']} > bot_y={last_bot_y} → НОВЕ")
+                    unanswered.append(msg)
+                else:
+                    logger.info(f"Медіа '{msg['content']}' y={msg['y_position']} <= bot_y={last_bot_y} → вже відповіли")
+            else:
+                # Текст — стара логіка по content match в БД
+                already_answered = False
+                for db_msg in db_history:
+                    if db_msg['role'] != 'user':
+                        continue
+                    if db_msg['content'] != msg['content']:
+                        continue
+                    if db_msg.get('answer_id'):
+                        already_answered = True
+                    break
+                if not already_answered:
+                    unanswered.append(msg)
 
         return unanswered
 
