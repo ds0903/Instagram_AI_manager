@@ -432,7 +432,7 @@ class AIAgent:
                         contents=messages,
                         config=types.GenerateContentConfig(
                             system_instruction=system_prompt,
-                            max_output_tokens=1024
+                            max_output_tokens=3072
                         )
                     )
 
