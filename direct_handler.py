@@ -2178,7 +2178,7 @@ class DirectHandler:
                 logger.error("📸 Жодне фото не додано в альбом")
                 return False
 
-            # Всі фото в staging — тепер один Send
+            # Всі фото в staging — один Send
             time.sleep(1)
             send_clicked = self._click_send_button()
             time.sleep(2)
@@ -2573,7 +2573,13 @@ class DirectHandler:
                 self.hover_and_click_reply(msg_element, chat_username=username)
 
             # 15. Відправляємо текстову відповідь
-            success = self.send_message(response)
+            # Якщо є \n\n — це розділювач між блоками (опис + питання)
+            # Кожен блок відправляємо окремим повідомленням
+            parts = [p.strip() for p in response.split('\n\n') if p.strip()]
+            success = False
+            for part in parts:
+                success = self.send_message(part)
+                time.sleep(0.8)
 
             # 16. Відправляємо фото / альбом
             if username not in self._sent_photos:
@@ -2584,8 +2590,6 @@ class DirectHandler:
                 new_album_urls = [u for u in album_urls if u not in self._sent_photos[username]]
                 if new_album_urls:
                     time.sleep(1)
-                    self.send_message("Ось фото")
-                    time.sleep(0.5)
                     logger.info(f"📸 Відправляємо альбом {len(new_album_urls)} фото для {username}")
                     if self.send_album_from_urls(new_album_urls):
                         for u in new_album_urls:
