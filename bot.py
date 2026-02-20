@@ -643,15 +643,21 @@ class InstagramBot:
                 logger.info("  Ctrl+C для зупинки")
                 logger.info("=" * 60)
 
-                # 5. Запускаємо цикл обробки повідомлень
+                # 5. Запускаємо одну ітерацію (single_run=True → повернеться після обробки)
                 heartbeat("Старт циклу inbox")
                 self.direct_handler.run_inbox_loop(
                     check_interval=check_interval,
-                    heartbeat_callback=heartbeat
+                    heartbeat_callback=heartbeat,
+                    single_run=True
                 )
 
-                # Якщо дійшли сюди - успішне завершення
-                restart_count = 0  # Скидаємо лічильник
+                # Ітерація завершена — закриваємо браузер і чекаємо
+                logger.info(f"Ітерація завершена. Закриваю браузер, чекаю {check_interval}с...")
+                self.close()
+                _kill_all_chrome()
+                heartbeat("Очікування між ітераціями")
+                time.sleep(check_interval)
+                restart_count = 0  # Не помилка — скидаємо лічильник
 
             except KeyboardInterrupt:
                 logger.info("Зупинка за запитом користувача (Ctrl+C)")

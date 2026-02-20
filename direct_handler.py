@@ -385,7 +385,21 @@ class DirectHandler:
                     if (link) {
                         var href = (link.getAttribute('href') || '').toLowerCase();
                         if (botUsername && href.includes('/' + botUsername)) {
-                            return false;  // наш профіль → наше повідомлення
+                            // Знайшли profile link бота — але перевіримо X-позицію
+                            // КОНТЕЙНЕРА (current), а не дрібного текстового елемента.
+                            // Якщо контейнер ліворуч (сторона клієнта), то лінк бота
+                            // знаходиться всередині цитати (reply quote) — це повідомлення клієнта.
+                            var containerRect = current.getBoundingClientRect();
+                            var chatEl = document.querySelector('div[role="grid"]')
+                                      || document.querySelector('main')
+                                      || document.documentElement;
+                            var chatRect = chatEl.getBoundingClientRect();
+                            var center = chatRect.left + chatRect.width / 2;
+                            if (containerRect.left + containerRect.width / 2 < center) {
+                                // Контейнер ліворуч — це клієнт, лінк бота з цитати
+                                return true;
+                            }
+                            return false;  // наш профіль, наше повідомлення (справа)
                         }
                         return true;  // інший профіль → користувач
                     }
@@ -2738,7 +2752,7 @@ class DirectHandler:
             logger.error(f"Помилка process_chat_by_click: {e}")
             return False
 
-    def run_inbox_loop(self, check_interval: int = 30, heartbeat_callback=None):
+    def run_inbox_loop(self, check_interval: int = 30, heartbeat_callback=None, single_run: bool = False):
         """
         Головний цикл: перевіряє локації ПО ЧЕРЗІ.
         Директ → знайшли → відповіли на всі → Запити → відповіли → Приховані → відповіли.
@@ -2746,9 +2760,13 @@ class DirectHandler:
         Args:
             check_interval: інтервал перевірки в секундах
             heartbeat_callback: функція для оновлення heartbeat (watchdog)
+            single_run: якщо True — виконати одну ітерацію і повернутись
+                        (браузер закривається і перезапускається зовні в bot.py)
         """
         logger.info(f"Запуск inbox loop, інтервал: {check_interval}с")
         logger.info(f"Локації для перевірки: {[loc['name'] for loc in self.DM_LOCATIONS]}")
+        if single_run:
+            logger.info("Режим single_run: одна ітерація → повернення (браузер перезапускається зовні)")
         if self.DEBUG_ONLY_USERNAME:
             logger.info(f"[DEBUG] Фільтр: відповідаємо тільки користувачу '{self.DEBUG_ONLY_USERNAME}'")
 
@@ -2814,7 +2832,14 @@ class DirectHandler:
 
                     time.sleep(random.uniform(1, 2))
 
-                logger.info(f"Оброблено {total_processed} чатів. Чекаємо {check_interval}с...")
+                logger.info(f"Оброблено {total_processed} чатів.")
+                heartbeat("Ітерація завершена")
+
+                if single_run:
+                    logger.info("single_run: повертаємось (браузер буде закрито і перезапущено зовні)")
+                    return
+
+                logger.info(f"Чекаємо {check_interval}с...")
                 heartbeat("Очікування наступної перевірки")
                 time.sleep(check_interval)
 
@@ -2824,4 +2849,6 @@ class DirectHandler:
             except Exception as e:
                 logger.error(f"Помилка в inbox loop: {e}")
                 heartbeat("Помилка в циклі, повтор")
+                if single_run:
+                    raise
                 time.sleep(check_interval)
