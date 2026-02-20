@@ -1926,8 +1926,12 @@ class DirectHandler:
             time.sleep(0.5)
 
             # Вводимо текст посимвольно (імітація людини)
+            # \n → Shift+Enter (новий рядок в тому ж повідомленні, не відправка)
             for char in text:
-                textbox.send_keys(char)
+                if char == '\n':
+                    ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(Keys.RETURN).key_up(Keys.SHIFT).perform()
+                else:
+                    textbox.send_keys(char)
                 time.sleep(random.uniform(0.02, 0.08))
 
             time.sleep(0.5)
@@ -2580,6 +2584,8 @@ class DirectHandler:
                 new_album_urls = [u for u in album_urls if u not in self._sent_photos[username]]
                 if new_album_urls:
                     time.sleep(1)
+                    self.send_message("Ось фото")
+                    time.sleep(0.5)
                     logger.info(f"📸 Відправляємо альбом {len(new_album_urls)} фото для {username}")
                     if self.send_album_from_urls(new_album_urls):
                         for u in new_album_urls:
