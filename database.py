@@ -139,6 +139,7 @@ class Database:
                     phone VARCHAR(50),
                     email VARCHAR(255),
                     city VARCHAR(100),
+                    delivery_address TEXT,
                     interested_products TEXT,
                     source VARCHAR(100) DEFAULT 'instagram_dm',
                     status VARCHAR(50) DEFAULT 'new',
@@ -150,6 +151,11 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_leads_username ON leads(username);
                 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+            """)
+
+            # Міграція: додаємо delivery_address якщо не існує
+            cur.execute("""
+                ALTER TABLE leads ADD COLUMN IF NOT EXISTS delivery_address TEXT;
             """)
 
             logger.info("Таблиці створено/перевірено")
@@ -332,27 +338,33 @@ class Database:
 
     def create_or_update_lead(self, username: str, display_name: str = None,
                                phone: str = None, email: str = None,
-                               city: str = None, interested_products: str = None,
+                               city: str = None, delivery_address: str = None,
+                               interested_products: str = None,
                                notes: str = None) -> int:
         """
         Створити або оновити ліда.
-        Якщо лід вже існує - оновити дані та збільшити лічильник повідомлень.
+        Викликається ТІЛЬКИ при підтвердженні замовлення ([ORDER] блок).
+        delivery_address: "ПІБ, місто, відділення НП"
+        interested_products: підтверджені замовлені товари
         """
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO leads (username, display_name, phone, email, city, interested_products, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO leads (username, display_name, phone, email, city,
+                                   delivery_address, interested_products, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (username) DO UPDATE SET
                     display_name = COALESCE(EXCLUDED.display_name, leads.display_name),
                     phone = COALESCE(EXCLUDED.phone, leads.phone),
                     email = COALESCE(EXCLUDED.email, leads.email),
                     city = COALESCE(EXCLUDED.city, leads.city),
+                    delivery_address = COALESCE(EXCLUDED.delivery_address, leads.delivery_address),
                     interested_products = COALESCE(EXCLUDED.interested_products, leads.interested_products),
                     notes = COALESCE(EXCLUDED.notes, leads.notes),
                     last_contact = CURRENT_TIMESTAMP,
                     messages_count = leads.messages_count + 1
                 RETURNING id
-            """, (username, display_name, phone, email, city, interested_products, notes))
+            """, (username, display_name, phone, email, city,
+                  delivery_address, interested_products, notes))
             return cur.fetchone()[0]
 
     def get_lead(self, username: str) -> dict:

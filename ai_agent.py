@@ -300,21 +300,42 @@ class AIAgent:
         )
         logger.info(f"Замовлення #{order_id} створено для {username}")
 
-        # Оновлюємо ліда з новими даними
-        self.db.create_or_update_lead(
+        # Збираємо delivery_address: "ПІБ, місто, відд. X"
+        addr_parts = []
+        if order_data.get('full_name'):
+            addr_parts.append(order_data['full_name'])
+        if order_data.get('city'):
+            addr_parts.append(order_data['city'])
+        if order_data.get('nova_poshta'):
+            addr_parts.append(f"відд. {order_data['nova_poshta']}")
+        delivery_address = ', '.join(addr_parts) if addr_parts else None
+
+        # Створюємо/оновлюємо ліда — тільки тут, після підтвердження замовлення
+        lead_id = self.db.create_or_update_lead(
             username=username,
             display_name=display_name,
             phone=order_data.get('phone'),
-            city=order_data.get('city')
+            city=order_data.get('city'),
+            delivery_address=delivery_address,
+            interested_products=order_data.get('products')
         )
+        logger.info(f"Лід створено/оновлено для {username}: {delivery_address}")
 
         # Сповіщення в Telegram
         if self.telegram:
+            # Сповіщення про нового ліда (підтверджене замовлення = готовий лід)
+            self.telegram.notify_new_lead(
+                username=username,
+                display_name=display_name,
+                phone=order_data.get('phone'),
+                products=order_data.get('products')
+            )
+            # Сповіщення про замовлення з деталями
             self.telegram.notify_new_order(
                 username=username,
                 order_data=order_data
             )
-            logger.info(f"Telegram сповіщення про замовлення #{order_id} відправлено")
+            logger.info(f"Telegram сповіщення про ліда та замовлення #{order_id} відправлено")
 
         return order_id
 
@@ -601,14 +622,7 @@ class AIAgent:
         )
         logger.info(f"Збережено user message id={user_msg_id} від {username}")
 
-        # 3. Створюємо/оновлюємо ліда
-        phone = self._extract_phone(content)
-        self.db.create_or_update_lead(
-            username=username,
-            display_name=display_name,
-            phone=phone
-        )
-        logger.info(f"Лід оновлено: {username}")
+        # 3. (Лід створюється тільки при підтвердженні замовлення — в _process_order)
 
         # 4. Перевіряємо ескалацію
         if self._check_escalation(content):
@@ -652,15 +666,7 @@ class AIAgent:
         # 8. Оновлюємо answer_id в user message
         self.db.update_answer_id(user_msg_id, assistant_msg_id)
 
-        # 9. Сповіщення про нового ліда (якщо це перший контакт)
-        lead = self.db.get_lead(username)
-        if lead and lead.get('messages_count') == 1 and self.telegram:
-            self.telegram.notify_new_lead(
-                username=username,
-                display_name=display_name,
-                phone=phone,
-                products=content[:100] if content else None
-            )
+        # 9. (Telegram про нового ліда надсилається в _process_order при підтвердженні замовлення)
 
         return response_text
 

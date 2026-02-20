@@ -2487,12 +2487,7 @@ class DirectHandler:
                 user_msg_ids.append(msg_id)
                 logger.info(f"Збережено user message id={msg_id}")
 
-            # 6. Створюємо/оновлюємо ліда
-            self.ai_agent.db.create_or_update_lead(
-                username=username,
-                display_name=display_name,
-                phone=phone
-            )
+            # 6. (Лід створюється тільки при підтвердженні замовлення — в _process_order)
 
             # 7. Перевіряємо ескалацію
             if self.ai_agent._check_escalation(combined_content):
