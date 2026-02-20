@@ -1959,115 +1959,22 @@ class DirectHandler:
                 logger.error(f"Файл не знайдено: {image_path}")
                 return False
 
-            # Стратегія 1: Шукаємо існуючий input[type='file'] (Instagram часто має прихований)
-            file_input = None
-            try:
-                inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                if inputs:
-                    file_input = inputs[0]
-                    logger.info("Знайдено існуючий input[type='file']")
-            except Exception:
-                pass
-
-            # Стратегія 2: Клікаємо на іконку фото/зображення щоб з'явився input
-            if not file_input:
-                try:
-                    # SVG іконка фото в панелі DM (зазвичай поруч з текстовим полем)
-                    photo_btns = self.driver.find_elements(
-                        By.XPATH,
-                        "//div[@role='textbox']/ancestor::form//button | "
-                        "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg[contains(@aria-label,'photo') or contains(@aria-label,'image') or contains(@aria-label,'фото') or contains(@aria-label,'зображення') or contains(@aria-label,'Photo') or contains(@aria-label,'gallery') or contains(@aria-label,'Add')]/ancestor::button | "
-                        "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg[contains(@aria-label,'Photo')]/ancestor::div[@role='button']"
-                    )
-                    for btn in photo_btns:
-                        try:
-                            btn.click()
-                            time.sleep(1)
-                            break
-                        except Exception:
-                            continue
-
-                    # Після кліку шукаємо input знову
-                    inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                    if inputs:
-                        file_input = inputs[0]
-                        logger.info("Знайдено input[type='file'] після кліку на іконку")
-                except Exception as e:
-                    logger.warning(f"Не вдалося знайти кнопку фото: {e}")
-
-            # Стратегія 3: Створюємо input через JavaScript (fallback)
-            if not file_input:
-                try:
-                    self.driver.execute_script("""
-                        var existingInputs = document.querySelectorAll('input[type="file"]');
-                        for (var i = 0; i < existingInputs.length; i++) {
-                            existingInputs[i].style.display = 'block';
-                            existingInputs[i].style.opacity = '1';
-                            existingInputs[i].style.position = 'fixed';
-                            existingInputs[i].style.top = '0';
-                            existingInputs[i].style.left = '0';
-                            existingInputs[i].style.zIndex = '99999';
-                        }
-                    """)
-                    time.sleep(0.5)
-                    inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                    if inputs:
-                        file_input = inputs[0]
-                        logger.info("Зробили input[type='file'] видимим через JS")
-                except Exception as e:
-                    logger.warning(f"JS fallback не спрацював: {e}")
-
+            file_input = self._get_file_input()
             if not file_input:
                 logger.error("Не вдалося знайти input[type='file'] для завантаження фото")
                 return False
 
-            # Відправляємо файл через input
             abs_path = os.path.abspath(image_path)
             file_input.send_keys(abs_path)
             logger.info(f"Файл завантажено: {abs_path}")
 
-            # Чекаємо поки з'явиться кнопка відправки або preview
+            # Чекаємо поки з'явиться preview
             time.sleep(2)
 
-            # Шукаємо кнопку Send/Надіслати
-            send_clicked = False
-            # Спосіб 1: Кнопка "Send" / "Надіслати"
-            try:
-                send_btns = self.driver.find_elements(
-                    By.XPATH,
-                    "//button[contains(text(),'Send') or contains(text(),'Надіслати') or contains(text(),'Отправить')]"
-                )
-                for btn in send_btns:
-                    if btn.is_displayed():
-                        btn.click()
-                        send_clicked = True
-                        break
-            except Exception:
-                pass
-
-            # Спосіб 2: div[role='button'] з текстом Send
-            if not send_clicked:
-                try:
-                    send_btns = self.driver.find_elements(
-                        By.XPATH,
-                        "//div[@role='button'][contains(.,'Send') or contains(.,'Надіслати')]"
-                    )
-                    for btn in send_btns:
-                        if btn.is_displayed():
-                            btn.click()
-                            send_clicked = True
-                            break
-                except Exception:
-                    pass
-
-            if send_clicked:
-                time.sleep(2)
-                logger.info(f"Фото відправлено: {image_path}")
-                return True
-            else:
-                # Якщо немає окремої кнопки — можливо фото вже в черзі і відправиться з Enter
-                logger.info("Кнопка Send не знайдена, можливо фото відправлено автоматично")
-                return True
+            send_clicked = self._click_send_button()
+            time.sleep(2)
+            logger.info(f"Фото відправлено: {image_path}")
+            return True
 
         except Exception as e:
             logger.error(f"Помилка відправки фото: {e}")
@@ -2146,6 +2053,186 @@ class DirectHandler:
         except Exception as e:
             logger.error(f"Помилка завантаження/відправки фото з URL: {e}")
             return False
+
+    def _get_file_input(self) -> object:
+        """
+        Знайти або активувати input[type='file'] для завантаження фото.
+        Клікає кнопку фото якщо input не видимий.
+        Повертає елемент або None.
+        """
+        # Стратегія 1: вже є видимий input
+        try:
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            for inp in inputs:
+                if inp.is_enabled():
+                    return inp
+        except Exception:
+            pass
+
+        # Стратегія 2: клікаємо кнопку фото/галерея в тулбарі
+        try:
+            photo_btns = self.driver.find_elements(
+                By.XPATH,
+                "//div[@role='textbox']/ancestor::form//button | "
+                "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg["
+                "contains(@aria-label,'photo') or contains(@aria-label,'image') or "
+                "contains(@aria-label,'фото') or contains(@aria-label,'зображення') or "
+                "contains(@aria-label,'Photo') or contains(@aria-label,'gallery') or "
+                "contains(@aria-label,'Add')]/ancestor::button | "
+                "//div[@role='textbox']/ancestor::div[contains(@class,'x')]"
+                "//svg[contains(@aria-label,'Photo')]/ancestor::div[@role='button']"
+            )
+            for btn in photo_btns:
+                try:
+                    btn.click()
+                    time.sleep(1)
+                    break
+                except Exception:
+                    continue
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            for inp in inputs:
+                if inp.is_enabled():
+                    return inp
+        except Exception:
+            pass
+
+        # Стратегія 3: JS — робимо input видимим
+        try:
+            self.driver.execute_script("""
+                var inputs = document.querySelectorAll('input[type="file"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    inputs[i].style.display = 'block';
+                    inputs[i].style.opacity = '1';
+                    inputs[i].style.position = 'fixed';
+                    inputs[i].style.top = '0';
+                    inputs[i].style.left = '0';
+                    inputs[i].style.zIndex = '99999';
+                }
+            """)
+            time.sleep(0.5)
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            for inp in inputs:
+                if inp.is_enabled():
+                    return inp
+        except Exception:
+            pass
+
+        return None
+
+    def _click_send_button(self) -> bool:
+        """Натиснути кнопку Send в поточному чаті. Повертає True якщо натиснуто."""
+        for xpath in [
+            "//button[contains(text(),'Send') or contains(text(),'Надіслати') or contains(text(),'Отправить')]",
+            "//div[@role='button'][contains(.,'Send') or contains(.,'Надіслати')]"
+        ]:
+            try:
+                btns = self.driver.find_elements(By.XPATH, xpath)
+                for btn in btns:
+                    if btn.is_displayed():
+                        btn.click()
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def send_album(self, image_paths: list) -> bool:
+        """
+        Відправити кілька фото одним альбомом.
+        Логіка: додаємо кожне фото в staging area окремо (БЕЗ Send),
+        після всіх фото — один Send. Так Instagram формує карусель/альбом.
+
+        Args:
+            image_paths: список абсолютних шляхів до файлів
+
+        Returns:
+            True якщо альбом відправлено
+        """
+        if not image_paths:
+            return False
+        if len(image_paths) == 1:
+            return self.send_photo(image_paths[0])
+
+        try:
+            staged = 0
+            for i, path in enumerate(image_paths):
+                abs_path = os.path.abspath(path)
+
+                # Для кожного фото окремо знаходимо/активуємо file input
+                file_input = self._get_file_input()
+                if not file_input:
+                    logger.warning(f"📸 Не вдалося знайти file input для фото {i+1}, зупиняємось на {staged}")
+                    break
+
+                file_input.send_keys(abs_path)
+                staged += 1
+                logger.info(f"📸 Фото {staged}/{len(image_paths)} додано в альбом: {os.path.basename(abs_path)}")
+
+                # Чекаємо поки фото з'явиться в preview перед додаванням наступного
+                time.sleep(2)
+
+            if staged == 0:
+                logger.error("📸 Жодне фото не додано в альбом")
+                return False
+
+            # Всі фото в staging — тепер один Send
+            time.sleep(1)
+            send_clicked = self._click_send_button()
+            time.sleep(2)
+
+            if send_clicked:
+                logger.info(f"📸 Альбом відправлено ({staged} фото)")
+            else:
+                logger.info(f"📸 Кнопка Send не знайдена, фото могло відправитись автоматично ({staged} фото)")
+            return True
+
+        except Exception as e:
+            logger.error(f"Помилка відправки альбому: {e}")
+            return False
+
+    def send_album_from_urls(self, urls: list) -> bool:
+        """
+        Завантажити фото з URL та відправити одним альбомом.
+
+        Args:
+            urls: список URL (Google Drive або будь-які прямі посилання)
+
+        Returns:
+            True якщо альбом відправлено
+        """
+        import tempfile
+        tmp_paths = []
+        try:
+            cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
+            headers = {'User-Agent': self.driver.execute_script("return navigator.userAgent")}
+
+            for url in urls:
+                url = self._convert_gdrive_url(url)
+                try:
+                    resp = requests.get(url, cookies=cookies, headers=headers, timeout=15)
+                    if resp.status_code != 200 or len(resp.content) < 1000:
+                        logger.warning(f"Не вдалося завантажити фото для альбому: {url[:60]}")
+                        continue
+                    ext = '.png' if resp.content[:4] == b'\x89PNG' else '.jpg'
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix='ig_album_')
+                    tmp.write(resp.content)
+                    tmp_paths.append(tmp.name)
+                    tmp.close()
+                    logger.info(f"📸 Фото для альбому: {len(resp.content)} байт")
+                except Exception as e:
+                    logger.warning(f"Помилка завантаження фото для альбому: {e}")
+
+            if not tmp_paths:
+                logger.error("send_album_from_urls: жодне фото не завантажено")
+                return False
+
+            return self.send_album(tmp_paths)
+
+        finally:
+            for p in tmp_paths:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
 
     def get_chat_username(self) -> str:
         """
@@ -2446,11 +2533,12 @@ class DirectHandler:
                 # Видаляємо маркер з тексту — клієнт не бачить
                 response = _re.sub(r'\[SAVE_QUESTION:.*?\]', '', response).strip()
 
-            # 10.5. Парсимо фото маркери [PHOTO:https://url]
-            # AI сама обирає URL з каталогу (опис кольору → URL)
+            # 10.5. Парсимо фото маркери
+            # [PHOTO:url] — одне фото (конкретний колір)
+            # [ALBUM:url1 url2 url3] — всі кольори одним альбомом
+            album_urls = self.ai_agent._parse_album_marker(response)
             photo_urls = self.ai_agent._parse_photo_markers(response)
-            if photo_urls:
-                # Видаляємо маркери з тексту — клієнт не бачить
+            if album_urls or photo_urls:
                 response = self.ai_agent._strip_photo_markers(response)
 
             # 11. Зберігаємо відповідь асистента в БД (вже без маркерів)
@@ -2483,12 +2571,24 @@ class DirectHandler:
             # 15. Відправляємо текстову відповідь
             success = self.send_message(response)
 
-            # 16. Відправляємо фото (якщо AI запросив через [PHOTO:...])
-            if photo_urls:
-                # Ініціалізуємо трекер для юзера
-                if username not in self._sent_photos:
-                    self._sent_photos[username] = set()
+            # 16. Відправляємо фото / альбом
+            if username not in self._sent_photos:
+                self._sent_photos[username] = set()
 
+            # 16a. Альбом [ALBUM:...] — всі фото одним повідомленням
+            if album_urls:
+                new_album_urls = [u for u in album_urls if u not in self._sent_photos[username]]
+                if new_album_urls:
+                    time.sleep(1)
+                    logger.info(f"📸 Відправляємо альбом {len(new_album_urls)} фото для {username}")
+                    if self.send_album_from_urls(new_album_urls):
+                        for u in new_album_urls:
+                            self._sent_photos[username].add(u)
+                else:
+                    logger.info(f"📸 Альбом вже надсилали, пропускаємо")
+
+            # 16b. Окремі фото [PHOTO:...]
+            if photo_urls:
                 time.sleep(1)
                 for url in photo_urls:
                     if url in self._sent_photos[username]:
@@ -2497,7 +2597,7 @@ class DirectHandler:
                     logger.info(f"Відправляємо фото: {url[:80]}")
                     if self.send_photo_from_url(url):
                         self._sent_photos[username].add(url)
-                    time.sleep(1.5)  # Пауза між фото
+                    time.sleep(1.5)
 
             if success:
                 self.processed_messages.add(combined_key)

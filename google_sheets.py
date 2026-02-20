@@ -517,6 +517,10 @@ class GoogleSheetsManager:
             name = p.get('Назва', p.get('Назва ', 'N/A'))
             result += f"📦 {i}. {name}\n"
 
+            where_to_wear = p.get('Куди носити', p.get('Куди носити ', ''))
+            if where_to_wear:
+                result += f"   Куди носити: {where_to_wear}\n"
+
             material = p.get('Матеріал', '')
             if material:
                 result += f"   Матеріал: {material}\n"

@@ -237,16 +237,34 @@ class AIAgent:
         """
         Парсинг маркерів [PHOTO:https://...] з відповіді AI.
         AI сама обирає конкретний URL з каталогу (опис кольору → URL).
-        Повертає список URL для відправки.
+        Повертає список URL для відправки (окремо кожне фото).
         """
         markers = re.findall(r'\[PHOTO:(https?://[^\]]+)\]', response)
         if markers:
             logger.info(f"Знайдено {len(markers)} фото URL: {[m[:60] for m in markers]}")
         return markers
 
+    def _parse_album_marker(self, response: str) -> list:
+        """
+        Парсинг маркера [ALBUM:url1 url2 url3] з відповіді AI.
+        Повертає список URL для відправки одним альбомом.
+        URL розділені пробілами або переносами рядка.
+        """
+        match = re.search(r'\[ALBUM:(.*?)\]', response, re.DOTALL)
+        if not match:
+            return []
+        raw = match.group(1).strip()
+        # Витягуємо всі https:// URL з вмісту маркера
+        urls = re.findall(r'https?://[^\s\]]+', raw)
+        if urls:
+            logger.info(f"Знайдено ALBUM з {len(urls)} фото")
+        return urls
+
     def _strip_photo_markers(self, response: str) -> str:
-        """Видалити маркери [PHOTO:...] з тексту відповіді (клієнт не бачить)."""
-        return re.sub(r'\s*\[PHOTO:.+?\]', '', response).strip()
+        """Видалити маркери [PHOTO:...] та [ALBUM:...] з тексту відповіді (клієнт не бачить)."""
+        response = re.sub(r'\s*\[PHOTO:https?://[^\]]+\]', '', response)
+        response = re.sub(r'\s*\[ALBUM:.*?\]', '', response, flags=re.DOTALL)
+        return response.strip()
 
     def get_product_photo_url(self, product_name: str) -> str:
         """Знайти URL фото товару через Google Sheets."""
