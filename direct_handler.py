@@ -2073,17 +2073,42 @@ class DirectHandler:
             logger.error(f"Помилка відправки фото: {e}")
             return False
 
+    @staticmethod
+    def _convert_gdrive_url(url: str) -> str:
+        """
+        Конвертує будь-який формат Google Drive посилання в пряме посилання для завантаження.
+        Підтримує всі варіанти:
+          https://drive.google.com/file/d/ID/view?usp=sharing
+          https://drive.google.com/file/d/ID/view
+          https://drive.google.com/open?id=ID
+          https://drive.google.com/uc?id=ID  (вже правильний)
+        """
+        import re as _re
+        # Варіант 1: /file/d/ID/...
+        m = _re.search(r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)', url)
+        if m:
+            return f'https://drive.google.com/uc?export=view&id={m.group(1)}'
+        # Варіант 2: open?id=ID або uc?id=ID (без export=view)
+        m = _re.search(r'drive\.google\.com/(?:open|uc)\?(?:.*&)?id=([a-zA-Z0-9_-]+)', url)
+        if m:
+            return f'https://drive.google.com/uc?export=view&id={m.group(1)}'
+        # Не Google Drive або вже правильний формат — повертаємо як є
+        return url
+
     def send_photo_from_url(self, image_url: str) -> bool:
         """
         Завантажити фото з URL та відправити в чат.
 
         Args:
-            image_url: URL зображення
+            image_url: URL зображення (будь-який формат Google Drive підтримується)
 
         Returns:
             True якщо фото відправлено
         """
         try:
+            # Конвертуємо Google Drive посилання в пряме
+            image_url = self._convert_gdrive_url(image_url)
+
             # Завантажуємо зображення
             cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
             headers = {'User-Agent': self.driver.execute_script("return navigator.userAgent")}
@@ -2421,16 +2446,10 @@ class DirectHandler:
                 # Видаляємо маркер з тексту — клієнт не бачить
                 response = _re.sub(r'\[SAVE_QUESTION:.*?\]', '', response).strip()
 
-            # 10.5. Парсимо фото маркери [PHOTO:назва_товару]
-            photo_markers = self.ai_agent._parse_photo_markers(response)
-            photo_urls = []
-            if photo_markers:
-                for product_name in photo_markers:
-                    url = self.ai_agent.get_product_photo_url(product_name)
-                    if url:
-                        photo_urls.append(url)
-                    else:
-                        logger.warning(f"Фото не знайдено для: {product_name}")
+            # 10.5. Парсимо фото маркери [PHOTO:https://url]
+            # AI сама обирає URL з каталогу (опис кольору → URL)
+            photo_urls = self.ai_agent._parse_photo_markers(response)
+            if photo_urls:
                 # Видаляємо маркери з тексту — клієнт не бачить
                 response = self.ai_agent._strip_photo_markers(response)
 

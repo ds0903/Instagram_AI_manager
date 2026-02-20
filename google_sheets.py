@@ -541,6 +541,14 @@ class GoogleSheetsManager:
             if note:
                 result += f"   Примітка: {note}\n"
 
+            # Фото (опис кольору → URL)
+            photo_raw = (
+                p.get('Фото URL') or p.get('Фото') or
+                p.get('Фото URL ') or p.get('Photo URL') or ''
+            ).strip()
+            if photo_raw:
+                result += f"   Фото: {photo_raw}\n"
+
             # Ціни по розмірам
             prices = p.get('prices_by_size', [])
             if prices:

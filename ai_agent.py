@@ -235,12 +235,13 @@ class AIAgent:
 
     def _parse_photo_markers(self, response: str) -> list:
         """
-        Парсинг маркерів [PHOTO:назва_товару] з відповіді AI.
-        Повертає список назв товарів для яких треба надіслати фото.
+        Парсинг маркерів [PHOTO:https://...] з відповіді AI.
+        AI сама обирає конкретний URL з каталогу (опис кольору → URL).
+        Повертає список URL для відправки.
         """
-        markers = re.findall(r'\[PHOTO:(.+?)\]', response)
+        markers = re.findall(r'\[PHOTO:(https?://[^\]]+)\]', response)
         if markers:
-            logger.info(f"Знайдено {len(markers)} фото маркерів: {markers}")
+            logger.info(f"Знайдено {len(markers)} фото URL: {[m[:60] for m in markers]}")
         return markers
 
     def _strip_photo_markers(self, response: str) -> str:
