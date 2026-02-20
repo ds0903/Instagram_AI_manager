@@ -2594,6 +2594,13 @@ class DirectHandler:
                     if self.send_album_from_urls(new_album_urls):
                         for u in new_album_urls:
                             self._sent_photos[username].add(u)
+                        # Записуємо в БД які саме фото надіслано — AI бачитиме в історії
+                        urls_str = ' '.join(new_album_urls)
+                        self.ai_agent.db.add_assistant_message(
+                            username=username,
+                            content=f'[Фото надіслано (альбом): {urls_str}]',
+                            display_name=display_name
+                        )
                 else:
                     logger.info(f"📸 Альбом вже надсилали, пропускаємо")
 
@@ -2607,6 +2614,12 @@ class DirectHandler:
                     logger.info(f"Відправляємо фото: {url[:80]}")
                     if self.send_photo_from_url(url):
                         self._sent_photos[username].add(url)
+                        # Записуємо в БД яке саме фото надіслано — AI бачитиме в історії
+                        self.ai_agent.db.add_assistant_message(
+                            username=username,
+                            content=f'[Фото надіслано: {url}]',
+                            display_name=display_name
+                        )
                     time.sleep(1.5)
 
             if success:
