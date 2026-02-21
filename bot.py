@@ -720,6 +720,13 @@ def main():
         except (ValueError, IndexError):
             pass
 
+    # Запускаємо слухача Telegram-команд (реєстрація адмінів /admin PASSWORD)
+    try:
+        from telegram_notifier import TelegramAdminListener
+        TelegramAdminListener().start()
+    except Exception as e:
+        logger.warning(f"TelegramAdminListener не запущено: {e}")
+
     bot = InstagramBot()
     bot.run(session_name, check_interval=check_interval)
 

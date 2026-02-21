@@ -1,84 +1,155 @@
 """
-Telegram Notifier - сповіщення менеджеру
-Ескалація при:
-- Прямому запиті ("покликати людину", "менеджер")
-- Виявленні конфлікту
-- Нестандартних питаннях
+Telegram Notifier - сповіщення менеджерам
+Реєстрація адміна: /admin PASSWORD в Telegram боті
+Всі зареєстровані адміни отримують сповіщення.
 """
 import os
+import json
+import threading
 import requests
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+ADMINS_FILE = Path(__file__).parent / 'telegram_admins.json'
 
-class TelegramNotifier:
-    """Відправка сповіщень в Telegram"""
+
+def _load_admins() -> list:
+    if ADMINS_FILE.exists():
+        try:
+            return json.loads(ADMINS_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            return []
+    return []
+
+
+def _save_admins(admins: list):
+    ADMINS_FILE.write_text(json.dumps(admins), encoding='utf-8')
+
+
+class TelegramAdminListener:
+    """
+    Слухає команди від Telegram і реєструє адмінів.
+    Запускати в окремому потоці: TelegramAdminListener().start()
+    """
 
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-        self.chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
-        self.enabled = bool(self.bot_token and self.chat_id)
+        self.password = os.getenv('TELEGRAM_ADMIN_PASSWORD', '')
+        self._offset = 0
+        self._running = False
+
+    def start(self):
+        if not self.bot_token or not self.password:
+            logger.warning("TelegramAdminListener: немає TOKEN або ADMIN_PASSWORD — не запущено")
+            return
+        self._running = True
+        t = threading.Thread(target=self._poll_loop, daemon=True, name='TelegramAdminListener')
+        t.start()
+        logger.info("TelegramAdminListener запущено")
+
+    def stop(self):
+        self._running = False
+
+    def _poll_loop(self):
+        while self._running:
+            try:
+                updates = self._get_updates()
+                for upd in updates:
+                    self._handle(upd)
+            except Exception as e:
+                logger.error(f"TelegramAdminListener poll error: {e}")
+            threading.Event().wait(3)
+
+    def _get_updates(self) -> list:
+        url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+        resp = requests.get(url, params={'offset': self._offset, 'timeout': 10}, timeout=15)
+        data = resp.json()
+        updates = data.get('result', [])
+        if updates:
+            self._offset = updates[-1]['update_id'] + 1
+        return updates
+
+    def _handle(self, upd: dict):
+        msg = upd.get('message') or upd.get('channel_post')
+        if not msg:
+            return
+        chat_id = str(msg['chat']['id'])
+        text = (msg.get('text') or '').strip()
+
+        if not text.startswith('/admin'):
+            return
+
+        parts = text.split()
+        if len(parts) < 2:
+            self._send(chat_id, "❌ Використання: /admin PASSWORD")
+            return
+
+        if parts[1] == self.password:
+            admins = _load_admins()
+            if chat_id not in admins:
+                admins.append(chat_id)
+                _save_admins(admins)
+                logger.info(f"TelegramAdmin: новий адмін зареєстровано chat_id={chat_id}")
+                self._send(chat_id, "✅ Ви зареєстровані як адмін! Будете отримувати всі сповіщення.")
+            else:
+                self._send(chat_id, "ℹ️ Ви вже зареєстровані як адмін.")
+        else:
+            self._send(chat_id, "❌ Невірний пароль.")
+
+    def _send(self, chat_id: str, text: str):
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=10)
+        except Exception as e:
+            logger.error(f"TelegramAdminListener send error: {e}")
+
+
+class TelegramNotifier:
+    """Відправка сповіщень всім зареєстрованим адмінам"""
+
+    def __init__(self):
+        self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+        self.enabled = bool(self.bot_token)
 
         if self.enabled:
             logger.info("Telegram Notifier увімкнено")
         else:
-            logger.warning("Telegram Notifier вимкнено (немає TOKEN або CHAT_ID)")
+            logger.warning("Telegram Notifier вимкнено (немає TELEGRAM_BOT_TOKEN)")
 
     def send_message(self, text: str, parse_mode: str = 'HTML') -> bool:
-        """
-        Відправити повідомлення в Telegram
-
-        Args:
-            text: Текст повідомлення
-            parse_mode: HTML або Markdown
-
-        Returns:
-            bool: True якщо успішно
-        """
         if not self.enabled:
-            logger.warning("Telegram не налаштовано, повідомлення не відправлено")
             return False
 
-        try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            payload = {
-                'chat_id': self.chat_id,
-                'text': text,
-                'parse_mode': parse_mode
-            }
-
-            response = requests.post(url, json=payload, timeout=10)
-
-            if response.status_code == 200:
-                logger.info("Telegram повідомлення відправлено")
-                return True
-            else:
-                logger.error(f"Telegram помилка: {response.status_code} - {response.text}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Помилка відправки в Telegram: {e}")
+        admins = _load_admins()
+        if not admins:
+            logger.warning("Telegram: немає зареєстрованих адмінів (відправте /admin PASSWORD боту)")
             return False
+
+        success = False
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        for chat_id in admins:
+            try:
+                resp = requests.post(url, json={
+                    'chat_id': chat_id,
+                    'text': text,
+                    'parse_mode': parse_mode
+                }, timeout=10)
+                if resp.status_code == 200:
+                    success = True
+                else:
+                    logger.error(f"Telegram [{chat_id}] помилка: {resp.status_code} {resp.text[:200]}")
+            except Exception as e:
+                logger.error(f"Telegram [{chat_id}] виняток: {e}")
+
+        return success
 
     def notify_escalation(self, username: str, display_name: str,
                           reason: str, last_message: str,
                           dialog_link: str = None) -> bool:
-        """
-        Сповіщення про ескалацію (передача оператору)
-
-        Args:
-            username: Instagram username
-            display_name: Ім'я клієнта
-            reason: Причина ескалації
-            last_message: Останнє повідомлення клієнта
-            dialog_link: Посилання на діалог (якщо є)
-
-        Returns:
-            bool: True якщо успішно
-        """
         text = f"""🚨 <b>ЕСКАЛАЦІЯ - Потрібен оператор!</b>
 
 👤 <b>Клієнт:</b> @{username}
@@ -89,51 +160,24 @@ class TelegramNotifier:
 💬 <b>Останнє повідомлення:</b>
 <i>{last_message[:500]}</i>
 """
-
         if dialog_link:
             text += f"\n🔗 <a href='{dialog_link}'>Перейти до діалогу</a>"
-
         return self.send_message(text)
 
     def notify_new_lead(self, username: str, display_name: str,
                         phone: str = None, products: str = None) -> bool:
-        """
-        Сповіщення про нового ліда
-
-        Args:
-            username: Instagram username
-            display_name: Ім'я клієнта
-            phone: Телефон (якщо є)
-            products: Товари які цікавлять
-
-        Returns:
-            bool: True якщо успішно
-        """
         text = f"""🎯 <b>НОВИЙ ЛІД!</b>
 
 👤 <b>Клієнт:</b> @{username}
 📛 <b>Ім'я:</b> {display_name or 'Невідомо'}
 """
-
         if phone:
             text += f"📱 <b>Телефон:</b> {phone}\n"
-
         if products:
             text += f"🛒 <b>Цікавлять:</b> {products}\n"
-
         return self.send_message(text)
 
     def notify_new_order(self, username: str, order_data: dict) -> bool:
-        """
-        Сповіщення про нове замовлення
-
-        Args:
-            username: Instagram username
-            order_data: Дані замовлення
-
-        Returns:
-            bool: True якщо успішно
-        """
         text = f"""✅ <b>НОВЕ ЗАМОВЛЕННЯ!</b>
 
 👤 <b>Клієнт:</b> @{username}
@@ -147,19 +191,9 @@ class TelegramNotifier:
 
 💰 <b>Сума:</b> {order_data.get('total_price', 'N/A')} грн
 """
-
         return self.send_message(text)
 
     def notify_error(self, error_message: str) -> bool:
-        """
-        Сповіщення про помилку
-
-        Args:
-            error_message: Текст помилки
-
-        Returns:
-            bool: True якщо успішно
-        """
         text = f"""❌ <b>ПОМИЛКА БОТА</b>
 
 {error_message[:1000]}
@@ -167,16 +201,6 @@ class TelegramNotifier:
         return self.send_message(text)
 
     def notify_unusual_question(self, username: str, question: str) -> bool:
-        """
-        Сповіщення про нестандартне питання
-
-        Args:
-            username: Instagram username
-            question: Текст питання
-
-        Returns:
-            bool: True якщо успішно
-        """
         text = f"""❓ <b>Нестандартне питання</b>
 
 👤 <b>Від:</b> @{username}
@@ -189,33 +213,5 @@ class TelegramNotifier:
         return self.send_message(text)
 
 
-def main():
-    """Тест відправки повідомлення"""
-    print("=" * 60)
-    print("  ТЕСТ TELEGRAM NOTIFIER")
-    print("=" * 60)
-
-    notifier = TelegramNotifier()
-
-    if not notifier.enabled:
-        print("\n[УВАГА] Telegram не налаштовано!")
-        print("Додай в .env:")
-        print("  TELEGRAM_BOT_TOKEN=your_bot_token")
-        print("  TELEGRAM_CHAT_ID=your_chat_id")
-        return
-
-    print("\nВідправляю тестове повідомлення...")
-
-    success = notifier.send_message(
-        "🤖 <b>Тест</b>\n\nInstagram AI Agent працює!",
-        parse_mode='HTML'
-    )
-
-    if success:
-        print("[OK] Повідомлення відправлено!")
-    else:
-        print("[ПОМИЛКА] Не вдалося відправити")
-
-
 if __name__ == '__main__':
-    main()
+    print("Зареєстровані адміни:", _load_admins())
