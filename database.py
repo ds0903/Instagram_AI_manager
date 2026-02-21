@@ -217,6 +217,16 @@ class Database:
             # Повертаємо в хронологічному порядку
             return list(reversed(messages))
 
+    def is_bot_message_in_db(self, username: str, text: str) -> bool:
+        """Перевірити чи є таке повідомлення бота (assistant) в БД для даного username."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT id FROM conversations
+                WHERE username = %s AND role = 'assistant' AND content = %s
+                LIMIT 1
+            """, (username, text))
+            return cur.fetchone() is not None
+
     def get_last_user_message_id(self, username: str) -> int:
         """Отримати ID останнього повідомлення користувача."""
         with self.conn.cursor() as cur:

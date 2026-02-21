@@ -872,9 +872,10 @@ class DirectHandler:
         # Зберігаємо елемент останнього повідомлення для hover+reply
         self._last_user_message_element = user_messages[-1]['element'] if user_messages else None
 
-        # Зберігаємо Y-позицію останнього повідомлення бота (для фільтрації медіа)
+        # Зберігаємо Y-позицію і текст останнього повідомлення бота (для фільтрації медіа і перевірки менеджера)
         assistant_messages = [m for m in all_messages if not m['is_from_user']]
         self._last_assistant_y = assistant_messages[-1]['y_position'] if assistant_messages else 0
+        self._last_assistant_text = assistant_messages[-1]['content'] if assistant_messages else None
 
         if not user_messages:
             logger.warning("Не знайдено жодного повідомлення від користувача")
@@ -2331,7 +2332,17 @@ class DirectHandler:
                 logger.info(f"Немає повідомлень від користувача в {username}")
                 return False
 
-            # 2. Фільтруємо: тільки НЕВІДПОВІДЖЕНІ (перевірка answer_id в БД)
+            # 2. Перевірка: чи не писав менеджер вручну
+            last_bot_text = getattr(self, '_last_assistant_text', None)
+            if last_bot_text:
+                if not self.ai_agent.db.is_bot_message_in_db(username, last_bot_text):
+                    logger.info(
+                        f"⚠️ [{username}] Останнє повідомлення бота не в БД — "
+                        f"менеджер писав вручну. Пропускаємо."
+                    )
+                    return False
+
+            # 3. Фільтруємо: тільки НЕВІДПОВІДЖЕНІ (перевірка answer_id в БД)
             unanswered = self._filter_unanswered(user_messages, username)
             if not unanswered:
                 logger.info(f"Всі повідомлення від {username} вже оброблені (є answer_id)")
