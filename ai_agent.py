@@ -321,6 +321,16 @@ class AIAgent:
         )
         logger.info(f"Лід створено/оновлено для {username}: {delivery_address}")
 
+        # Передаємо замовлення в HugeProfit CRM
+        try:
+            from hugeprofit import HugeProfitCRM
+            crm = HugeProfitCRM()
+            if crm.push_order(username=username, order_data=order_data):
+                self.db.update_lead_status(username, 'imported')
+                logger.info(f"Лід {username} → статус 'imported'")
+        except Exception as e:
+            logger.error(f"HugeProfit: помилка передачі замовлення: {e}")
+
         # Сповіщення в Telegram
         if self.telegram:
             # Сповіщення про нового ліда (підтверджене замовлення = готовий лід)
