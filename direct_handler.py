@@ -875,7 +875,10 @@ class DirectHandler:
         # Зберігаємо Y-позицію і текст останнього повідомлення бота (для фільтрації медіа і перевірки менеджера)
         assistant_messages = [m for m in all_messages if not m['is_from_user']]
         self._last_assistant_y = assistant_messages[-1]['y_position'] if assistant_messages else 0
-        self._last_assistant_text = assistant_messages[-1]['content'] if assistant_messages else None
+        # Для перевірки менеджера — шукаємо останнє ТЕКСТОВЕ повідомлення бота (не [Фото]/[Голосове]/[Відео])
+        media_placeholders = {'[Фото]', '[Голосове]', '[Відео]', '[Фото]'}
+        assistant_text_messages = [m for m in assistant_messages if m['content'] not in media_placeholders]
+        self._last_assistant_text = assistant_text_messages[-1]['content'] if assistant_text_messages else None
 
         if not user_messages:
             logger.warning("Не знайдено жодного повідомлення від користувача")
