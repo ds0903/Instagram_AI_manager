@@ -2500,38 +2500,35 @@ class DirectHandler:
 
             # 6. (Лід створюється тільки при підтвердженні замовлення — в _process_order)
 
-            # 7. Перевіряємо ескалацію
-            if self.ai_agent._check_escalation(combined_content):
-                logger.info(f"Ескалація для {username}")
+            # 7. Перевіряємо правила поведінки (Google Sheets)
+            media_types = {'voice', 'image', 'video', 'story_media'}
+            behavior_rule = None
+            if message_type not in media_types:
+                behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
+            if behavior_rule and behavior_rule.get('Відповідь'):
+                response = behavior_rule.get('Відповідь')
+                logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
+            else:
+                # 8. Генеруємо відповідь через AI
+                response = self.ai_agent.generate_response(
+                    username=username,
+                    user_message=combined_content,
+                    display_name=display_name,
+                    message_type=message_type,
+                    image_data=story_images_list if story_images_list else image_data,
+                    audio_data=audio_data_list if audio_data_list else None
+                )
+
+            # 9. Перевіряємо ескалацію — AI сама вставляє [ESCALATION] якщо клієнт просить менеджера
+            if response and '[ESCALATION]' in response:
+                logger.info(f"Ескалація для {username} (AI визначила)")
                 self.ai_agent.escalate_to_human(
                     username=username,
                     display_name=display_name,
                     reason="Клієнт просить зв'язку з оператором",
                     last_message=combined_content
                 )
-                response = self.ai_agent.prompts.get('escalation_response',
-                    'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
-            else:
-                # 8. Перевіряємо правила поведінки (Google Sheets)
-                # Пропускаємо для медіа (voice/video/story) — їм потрібен AI-аналіз,
-                # а не шаблонна відповідь (тригери можуть false-positive на службові слова)
-                media_types = {'voice', 'image', 'video', 'story_media'}
-                behavior_rule = None
-                if message_type not in media_types:
-                    behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
-                if behavior_rule and behavior_rule.get('Відповідь'):
-                    response = behavior_rule.get('Відповідь')
-                    logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
-                else:
-                    # 9. Генеруємо відповідь через AI
-                    response = self.ai_agent.generate_response(
-                        username=username,
-                        user_message=combined_content,
-                        display_name=display_name,
-                        message_type=message_type,
-                        image_data=story_images_list if story_images_list else image_data,
-                        audio_data=audio_data_list if audio_data_list else None
-                    )
+                response = response.replace('[ESCALATION]', '').strip()
 
             if not response:
                 return False

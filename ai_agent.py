@@ -21,13 +21,6 @@ logger = logging.getLogger(__name__)
 PROMPTS_FILE = Path(__file__).parent / 'prompts.yml'
 
 # Тригери для ескалації (передача оператору)
-ESCALATION_TRIGGERS = [
-    'менеджер', 'manager', 'оператор', 'людина', 'человек',
-    'покликати', 'покличте', 'позовіть', 'хочу з людиною',
-    'жива людина', 'real person', 'human',
-    'скарга', 'complaint', 'повернення', 'return', 'refund',
-    'скандал', 'обман', 'шахрай', 'fraud'
-]
 
 
 class AIAgent:
@@ -100,7 +93,6 @@ class AIAgent:
 
         messages = []
         for msg in history:
-            # Gemini використовує 'model' замість 'assistant'
             role = 'model' if msg['role'] == 'assistant' else msg['role']
             messages.append(
                 types.Content(
@@ -120,15 +112,6 @@ class AIAgent:
                 logger.warning(f"Помилка Google Sheets: {e}")
 
         return "Каталог товарів недоступний."
-
-    def _check_escalation(self, message: str) -> bool:
-        """Перевірити чи потрібна ескалація (передача оператору)."""
-        message_lower = message.lower()
-        for trigger in ESCALATION_TRIGGERS:
-            if trigger in message_lower:
-                logger.info(f"Знайдено тригер ескалації: '{trigger}'")
-                return True
-        return False
 
     def _check_behavior_rules(self, message: str) -> dict:
         """Перевірити правила поведінки з Google Sheets. Якщо аркуша немає — повертає None."""
@@ -356,14 +339,6 @@ class AIAgent:
 
         # Сповіщення в Telegram
         if self.telegram:
-            # Сповіщення про нового ліда (підтверджене замовлення = готовий лід)
-            self.telegram.notify_new_lead(
-                username=username,
-                display_name=display_name,
-                phone=order_data.get('phone'),
-                products=order_data.get('products')
-            )
-            # Сповіщення про замовлення з деталями
             self.telegram.notify_new_order(
                 username=username,
                 order_data=order_data
@@ -519,12 +494,51 @@ class AIAgent:
                         contents=messages,
                         config=types.GenerateContentConfig(
                             system_instruction=system_prompt,
-                            max_output_tokens=3072
+                            max_output_tokens=3072,
+                            safety_settings=[
+                                types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE'),
+                                types.SafetySetting(category='HARM_CATEGORY_CIVIC_INTEGRITY', threshold='BLOCK_NONE'),
+                            ]
                         )
                     )
 
                     # Отримуємо текст відповіді
-                    assistant_message = response.text
+                    try:
+                        assistant_message = response.text
+                    except Exception:
+                        assistant_message = None
+                    if not assistant_message:
+                        if not getattr(response, 'candidates', None) and attempt == 1:
+                            # Промпт заблоковано (candidates=[]) — повторюємо БЕЗ історії розмови
+                            logger.warning("Gemini заблокував промпт (candidates=[]) — retry без історії")
+                            only_current = [messages[-1]]
+                            retry_resp = self.client.models.generate_content(
+                                model=self.model,
+                                contents=only_current,
+                                config=types.GenerateContentConfig(
+                                    system_instruction=system_prompt,
+                                    max_output_tokens=3072,
+                                    safety_settings=[
+                                        types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                                        types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                                        types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                                        types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE'),
+                                        types.SafetySetting(category='HARM_CATEGORY_CIVIC_INTEGRITY', threshold='BLOCK_NONE'),
+                                    ]
+                                )
+                            )
+                            try:
+                                assistant_message = retry_resp.text
+                            except Exception:
+                                assistant_message = None
+                            if assistant_message:
+                                return assistant_message
+                        logger.warning("Gemini повернув порожню відповідь")
+                        assistant_message = None
+                        break
 
                     if message_type == 'image':
                         logger.info(f"📷 AI Vision відповідь для {username}: {assistant_message[:200]}")

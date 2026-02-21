@@ -182,10 +182,20 @@ class HugeProfitCRM:
                 mid = stock[0].get('id')
                 return int(mid) if mid else None
 
+            from google.genai import types as genai_types
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model='gemini-2.0-flash',
-                contents=prompt
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    safety_settings=[
+                        genai_types.SafetySetting(category='HARM_CATEGORY_HARASSMENT', threshold='BLOCK_NONE'),
+                        genai_types.SafetySetting(category='HARM_CATEGORY_HATE_SPEECH', threshold='BLOCK_NONE'),
+                        genai_types.SafetySetting(category='HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold='BLOCK_NONE'),
+                        genai_types.SafetySetting(category='HARM_CATEGORY_DANGEROUS_CONTENT', threshold='BLOCK_NONE'),
+                        genai_types.SafetySetting(category='HARM_CATEGORY_CIVIC_INTEGRITY', threshold='BLOCK_NONE'),
+                    ]
+                )
             )
             mid_str = response.text.strip().split()[0]
             mid = int(re.sub(r'\D', '', mid_str))
