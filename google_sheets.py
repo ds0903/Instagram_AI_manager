@@ -515,7 +515,11 @@ class GoogleSheetsManager:
         result = "== ПОВНИЙ КАТАЛОГ ТОВАРІВ (шукай товар ТІЛЬКИ тут) ==\n\n"
         for i, p in enumerate(products, 1):
             name = p.get('Назва', p.get('Назва ', 'N/A'))
-            result += f"📦 {i}. {name}\n"
+            hp_id = p.get('ID Товара', '').strip()
+            result += f"📦 {i}. {name}"
+            if hp_id:
+                result += f" [HugeProfit ID: {hp_id}]"
+            result += "\n"
 
             where_to_wear = p.get('Куди носити', p.get('Куди носити ', ''))
             if where_to_wear:
@@ -581,6 +585,26 @@ class GoogleSheetsManager:
 
         result += "== КІНЕЦЬ КАТАЛОГУ. Називай ТІЛЬКИ товари з цього списку! ==\n"
         return result
+
+    def get_product_id_map(self) -> dict:
+        """
+        Повертає словник {назва_товару_lowercase: hugeprofit_pid} для всіх товарів
+        що мають заповнений "ID Товара" в Google Sheets.
+
+        Використовується для пошуку pid при передачі замовлення в HugeProfit.
+        """
+        products = self.get_products()
+        id_map = {}
+        for p in products:
+            hp_id = p.get('ID Товара', '').strip()
+            name = (p.get('Назва') or p.get('Назва ', '')).strip()
+            if hp_id and name:
+                try:
+                    id_map[name.lower()] = int(hp_id)
+                except ValueError:
+                    pass
+        logger.info(f"HugeProfit ID map: {len(id_map)} товарів")
+        return id_map
 
 
 def main():

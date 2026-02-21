@@ -325,11 +325,34 @@ class AIAgent:
         try:
             from hugeprofit import HugeProfitCRM
             crm = HugeProfitCRM()
-            if crm.push_order(username=username, order_data=order_data):
+            # Отримуємо map {назва: pid} з Google Sheets
+            product_id_map = {}
+            if self.sheets_manager:
+                try:
+                    product_id_map = self.sheets_manager.get_product_id_map()
+                except Exception as e:
+                    logger.warning(f"HugeProfit: не вдалося отримати product_id_map: {e}")
+            if crm.push_order(username=username, order_data=order_data,
+                              product_id_map=product_id_map):
                 self.db.update_lead_status(username, 'imported')
                 logger.info(f"Лід {username} → статус 'imported'")
+            else:
+                logger.error(f"HugeProfit: не вдалося передати ліда {username}")
+                if self.telegram:
+                    self.telegram.notify_error(
+                        f"❌ HugeProfit: не вдалося передати ліда\n"
+                        f"👤 <b>{username}</b>\n"
+                        f"📦 {order_data.get('products', '—')}\n"
+                        f"💰 {order_data.get('total_price', '—')} грн"
+                    )
         except Exception as e:
             logger.error(f"HugeProfit: помилка передачі замовлення: {e}")
+            if self.telegram:
+                self.telegram.notify_error(
+                    f"❌ HugeProfit: виняток при передачі ліда\n"
+                    f"👤 <b>{username}</b>\n"
+                    f"⚠️ {e}"
+                )
 
         # Сповіщення в Telegram
         if self.telegram:
