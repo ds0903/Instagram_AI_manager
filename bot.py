@@ -7,19 +7,14 @@ Instagram AI Agent Bot
 - Автоперезапуск - до 3 спроб при помилках
 - Telegram сповіщення - про помилки, сесію, AI
 """
-import undetected_chromedriver as uc
+from camoufox.sync_api import Camoufox
 import pickle
 import time
 import re
 import os
 import sys
-import platform
-import subprocess
-import tempfile
 import logging
 import threading
-import shutil
-import psutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -37,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Вимикаємо зайві логи
 logging.getLogger('urllib3').setLevel(logging.WARNING)
-logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('playwright').setLevel(logging.WARNING)
 
 # Базова директорія проекту
 BASE_DIR = Path(__file__).parent
@@ -50,13 +45,6 @@ _watchdog_thread = None
 _last_heartbeat = time.time()
 WATCHDOG_TIMEOUT_MINUTES = 3  # Таймаут зависання
 
-# Зберігаємо PID Chrome процесу
-_chrome_pid = None
-_chrome_pids_file = BASE_DIR / 'data' / 'chrome_pids.txt'
-
-# Префікс для наших Chrome профілів
-CHROME_PROFILE_PREFIX = 'chrome_insta_'
-
 
 def heartbeat(operation_name: str = None):
     """Оновити heartbeat (повідомити що бот живий)"""
@@ -66,151 +54,6 @@ def heartbeat(operation_name: str = None):
         logger.debug(f"Heartbeat: {operation_name}")
 
 
-def _save_chrome_pid(pid: int):
-    """Зберегти PID Chrome в файл"""
-    global _chrome_pid
-    _chrome_pid = pid
-    try:
-        _chrome_pids_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(_chrome_pids_file, 'a') as f:
-            f.write(f"{pid}\n")
-        logger.debug(f"Chrome PID збережено: {pid}")
-    except Exception as e:
-        logger.warning(f"Не вдалося зберегти PID: {e}")
-
-
-def _get_saved_chrome_pids() -> list:
-    """Отримати збережені PID з файлу"""
-    pids = []
-    try:
-        if _chrome_pids_file.exists():
-            with open(_chrome_pids_file, 'r') as f:
-                for line in f:
-                    try:
-                        pids.append(int(line.strip()))
-                    except ValueError:
-                        pass
-    except Exception:
-        pass
-    return pids
-
-
-def _clear_chrome_pids_file():
-    """Очистити файл з PID"""
-    try:
-        if _chrome_pids_file.exists():
-            _chrome_pids_file.unlink()
-    except Exception:
-        pass
-
-
-def _kill_process_tree(pid: int):
-    """Вбити процес і всі його дочірні процеси"""
-    try:
-        parent = psutil.Process(pid)
-        children = parent.children(recursive=True)
-
-        # Спочатку вбиваємо дітей
-        for child in children:
-            try:
-                child.kill()
-                logger.debug(f"Вбито дочірній процес: {child.pid}")
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
-        # Потім батька
-        try:
-            parent.kill()
-            logger.info(f"Вбито Chrome процес: {pid}")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    except psutil.NoSuchProcess:
-        logger.debug(f"Процес {pid} вже не існує")
-    except Exception as e:
-        logger.warning(f"Помилка вбивства процесу {pid}: {e}")
-
-
-def _kill_chrome_by_profile():
-    """Вбити всі Chrome процеси з нашим профілем (chrome_insta_*)"""
-    killed_count = 0
-    try:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                name = proc.info['name'] or ''
-                cmdline = proc.info['cmdline'] or []
-
-                # Перевіряємо чи це Chrome/chromedriver
-                if 'chrome' not in name.lower():
-                    continue
-
-                # Перевіряємо чи є наш профіль в командному рядку
-                cmdline_str = ' '.join(cmdline)
-                if CHROME_PROFILE_PREFIX in cmdline_str:
-                    _kill_process_tree(proc.info['pid'])
-                    killed_count += 1
-
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-    except Exception as e:
-        logger.warning(f"Помилка пошуку Chrome процесів: {e}")
-
-    return killed_count
-
-
-def _kill_all_chrome():
-    """
-    Вбити ТІЛЬКИ наші Chrome процеси (не чіпає інші):
-    1. По збереженому PID
-    2. По профілю chrome_insta_*
-    3. Очистити тимчасові папки
-    """
-    global _chrome_pid
-
-    logger.info("Очищення Chrome процесів (тільки наші)...")
-    killed_total = 0
-
-    # 1. Вбиваємо по збереженому PID (поточний)
-    if _chrome_pid:
-        logger.info(f"Вбиваю по поточному PID: {_chrome_pid}")
-        _kill_process_tree(_chrome_pid)
-        killed_total += 1
-        _chrome_pid = None
-
-    # 2. Вбиваємо по збереженим PID з файлу (попередні запуски)
-    saved_pids = _get_saved_chrome_pids()
-    if saved_pids:
-        logger.info(f"Вбиваю по збереженим PID: {saved_pids}")
-        for pid in saved_pids:
-            _kill_process_tree(pid)
-            killed_total += 1
-
-    # 3. Вбиваємо по профілю (гарантовано знайде всі)
-    logger.info(f"Шукаю Chrome процеси з профілем '{CHROME_PROFILE_PREFIX}*'...")
-    killed_by_profile = _kill_chrome_by_profile()
-    killed_total += killed_by_profile
-
-    # Чекаємо щоб Windows звільнив lock-файли
-    if platform.system() == 'Windows':
-        time.sleep(2)
-
-    # 4. Очищуємо тимчасові профілі
-    temp_dir = tempfile.gettempdir()
-    cleaned_dirs = 0
-    for item in Path(temp_dir).glob(f'{CHROME_PROFILE_PREFIX}*'):
-        try:
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-                cleaned_dirs += 1
-                logger.debug(f"Видалено профіль: {item}")
-        except Exception:
-            pass
-
-    # 5. Очищуємо файл з PID
-    _clear_chrome_pids_file()
-
-    logger.info(f"Очищено: {killed_total} процесів, {cleaned_dirs} профілів")
 
 
 def _watchdog_loop():
@@ -231,7 +74,7 @@ def _watchdog_loop():
             logger.error("=" * 60)
             logger.error(f"WATCHDOG: ТАЙМАУТ! Операція зависла на {elapsed/60:.1f} хвилин!")
             logger.error("=" * 60)
-            logger.error("Вбиваю Chrome і перезапускаю скрипт...")
+            logger.error("Перезапускаємо скрипт (Camoufox закриється разом з процесом)...")
 
             # Сповіщення в Telegram
             try:
@@ -240,9 +83,6 @@ def _watchdog_loop():
                 notifier.notify_error(f"Бот завис на {elapsed/60:.1f} хв. Перезапуск...")
             except Exception:
                 pass
-
-            # Вбиваємо Chrome
-            _kill_all_chrome()
 
             # Перезапускаємо скрипт
             logger.error("Перезапуск скрипта через 5 секунд...")
@@ -271,155 +111,43 @@ def stop_watchdog():
     _watchdog_running = False
 
 
-def detect_chrome_version():
-    """Визначає версію Chrome. Повертає int або None."""
-    try:
-        if platform.system() == 'Windows':
-            try:
-                import winreg
-                for hkey in [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]:
-                    try:
-                        key = winreg.OpenKey(hkey, r'SOFTWARE\Google\Chrome\BLBeacon')
-                        version_str, _ = winreg.QueryValueEx(key, 'version')
-                        winreg.CloseKey(key)
-                        match = re.search(r'(\d+)\.', version_str)
-                        if match:
-                            return int(match.group(1))
-                    except (FileNotFoundError, OSError):
-                        continue
-            except ImportError:
-                pass
-        else:
-            for cmd in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-                try:
-                    result = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        match = re.search(r'(\d+)\.', result.stdout.strip())
-                        if match:
-                            return int(match.group(1))
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    continue
-    except Exception:
-        pass
-    return None
-
 
 class InstagramBot:
     def __init__(self):
-        self.driver = None
+        self.driver = None  # Playwright Page (alias)
+        self.page = None
+        self._camoufox = None
+        self.browser = None
+        self.context = None
         self.temp_profile_dir = None
         self.db = None
         self.ai_agent = None
         self.direct_handler = None
 
     def init_driver(self, headless=False):
-        """Запуск Chrome з антидетект налаштуваннями."""
-        import uuid
-        unique_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        self.temp_profile_dir = tempfile.mkdtemp(prefix=f'chrome_insta_{unique_id}_')
-
-        options = uc.ChromeOptions()
-
-        if headless:
-            options.add_argument('--headless=new')
-            options.add_argument('--disable-gpu')
-            logger.info("Headless режим увімкнено")
-
-        options.add_argument(f'--user-data-dir={self.temp_profile_dir}')
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--start-maximized')
-        options.add_argument('--disable-automation')
-        options.add_argument('--disable-notifications')
-        options.add_argument('--disable-infobars')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-logging')
-        options.add_argument('--log-level=3')
-
-        prefs = {
-            'profile.default_content_setting_values': {
-                'notifications': 2,
-                'geolocation': 2,
-            },
-            'credentials_enable_service': False,
-            'profile.password_manager_enabled': False
-        }
-        options.add_experimental_option('prefs', prefs)
-
-        # Performance logging для CDP моніторингу мережі (захоплення аудіо голосових)
-        options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-
-        logger.info(f"Запуск Chrome з профілем: {self.temp_profile_dir}")
-
+        """Запуск Camoufox (Firefox антидетект) браузера."""
         try:
-            chrome_version = detect_chrome_version()
-            if chrome_version:
-                logger.info(f"Версія Chrome: {chrome_version}")
+            logger.info(f"Запуск Camoufox (headless={headless})...")
+            self._camoufox = Camoufox(headless=headless, geoip=True)
+            self.browser = self._camoufox.__enter__()
 
-            self.driver = uc.Chrome(
-                options=options,
-                version_main=chrome_version,
-                use_subprocess=True,
-                headless=headless
-            )
+            # Завантажуємо сесію якщо є
+            session_file = SESSIONS_DIR / os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
+            session_json = str(session_file).replace('.pkl', '.json')
 
-            self.driver.set_window_size(1920, 1080)
+            if os.path.exists(session_json):
+                self.context = self.browser.new_context(storage_state=session_json)
+                logger.info(f"Camoufox: сесія завантажена з {session_json}")
+            else:
+                self.context = self.browser.new_context()
 
-            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
-            })
-
-            stealth_js = """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [
-                {name: 'Chrome PDF Plugin', description: 'Portable Document Format', filename: 'internal-pdf-viewer'},
-                {name: 'Chrome PDF Viewer', description: '', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-                {name: 'Native Client', description: '', filename: 'internal-nacl-plugin'}
-            ]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
-
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({state: Notification.permission}) :
-                    originalQuery(parameters)
-            );
-
-            const getParameter = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) return 'Intel Inc.';
-                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                return getParameter.call(this, parameter);
-            };
-
-            if (!window.chrome) window.chrome = {};
-            if (!window.chrome.runtime) window.chrome.runtime = {};
-
-            Object.keys(window).forEach(key => {
-                if (key.startsWith('$cdc_') || key.startsWith('cdc_')) {
-                    delete window[key];
-                }
-            });
-            """
-            self.driver.execute_script(stealth_js)
-
-            # Зберігаємо PID Chrome процесу
-            try:
-                chrome_pid = self.driver.service.process.pid
-                _save_chrome_pid(chrome_pid)
-                logger.info(f"Chrome запущено успішно (PID: {chrome_pid})")
-            except Exception:
-                logger.info("Chrome запущено успішно (антидетект)")
+            self.page = self.context.new_page()
+            self.page.set_viewport_size({"width": 1920, "height": 1080})
+            self.driver = self.page  # alias для сумісності
+            logger.info("Camoufox запущено успішно")
 
         except Exception as e:
-            logger.error(f"Помилка запуску Chrome: {e}")
+            logger.error(f"Помилка запуску Camoufox: {e}")
             raise
 
     def init_ai_components(self):
@@ -450,68 +178,72 @@ class InstagramBot:
             return False
 
     def load_session(self, session_name: str = None):
-        """Завантаження cookies з session файлу."""
-        # Використовуємо назву з .env або параметру
+        """Завантаження сесії — для Camoufox вже зроблено в init_driver через storage_state."""
         if session_name is None:
             session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
 
         session_file = SESSIONS_DIR / session_name
-        if not session_file.exists():
-            logger.error(f"Session файл не знайдено: {session_file}")
-            logger.error(f"Створи його через login_helper.py")
-            return False
+        session_json = str(session_file).replace('.pkl', '.json')
 
-        try:
-            with open(session_file, 'rb') as f:
-                cookies = pickle.load(f)
-
-            self.driver.get('https://www.instagram.com')
-            time.sleep(2)
-
-            for cookie in cookies:
-                if 'expiry' in cookie:
-                    cookie['expiry'] = int(cookie['expiry'])
-                try:
-                    self.driver.add_cookie(cookie)
-                except Exception as e:
-                    logger.debug(f"Помилка додавання cookie: {e}")
-
-            self.driver.refresh()
+        # Якщо JSON сесія вже завантажена в init_driver — просто перевіряємо логін
+        if os.path.exists(session_json):
+            self.page.goto('https://www.instagram.com')
             time.sleep(3)
-
             if self.is_logged_in():
-                logger.info(f"Сесія завантажена: {session_name}")
+                logger.info(f"Сесія завантажена: {session_json}")
                 return True
-            else:
-                logger.error("Cookies завантажено, але логін не пройшов")
+
+        # Fallback: спробувати завантажити старий pickle як cookies
+        if session_file.exists():
+            try:
+                with open(session_file, 'rb') as f:
+                    cookies = pickle.load(f)
+
+                self.page.goto('https://www.instagram.com')
+                time.sleep(2)
+
+                for cookie in cookies:
+                    try:
+                        c = {'name': cookie['name'], 'value': cookie['value'],
+                             'domain': cookie.get('domain', '.instagram.com'),
+                             'path': cookie.get('path', '/')}
+                        if 'expiry' in cookie:
+                            c['expires'] = int(cookie['expiry'])
+                        self.context.add_cookies([c])
+                    except Exception as e:
+                        logger.debug(f"Помилка cookie: {e}")
+
+                self.page.reload()
+                time.sleep(3)
+
+                if self.is_logged_in():
+                    # Зберігаємо як JSON для наступних запусків
+                    self.context.storage_state(path=session_json)
+                    logger.info(f"Сесія завантажена і збережена як JSON: {session_json}")
+                    return True
+                else:
+                    logger.error("Cookies завантажено, але логін не пройшов")
+                    return False
+            except Exception as e:
+                logger.error(f"Помилка завантаження сесії: {e}")
                 return False
 
-        except Exception as e:
-            logger.error(f"Помилка завантаження сесії: {e}")
-            return False
+        logger.error(f"Session файл не знайдено: {session_file}")
+        return False
 
     def is_logged_in(self):
         """Перевірка чи залогінені в Instagram."""
         try:
             time.sleep(2)
-            current_url = self.driver.current_url
+            current_url = self.page.url
 
             if 'login' in current_url.lower() or 'accounts/login' in current_url:
                 return False
 
-            from selenium.webdriver.common.by import By
-
-            try:
-                self.driver.find_element(By.XPATH, "//a[contains(@href, '/accounts/edit/')]")
+            if self.page.locator("xpath=//a[contains(@href, '/accounts/edit/')]").count() > 0:
                 return True
-            except Exception:
-                pass
-
-            try:
-                self.driver.find_element(By.XPATH, "//svg[@aria-label='Profile']")
+            if self.page.locator("xpath=//svg[@aria-label='Profile']").count() > 0:
                 return True
-            except Exception:
-                pass
 
             return 'login' not in current_url.lower()
 
@@ -522,10 +254,10 @@ class InstagramBot:
         """Перехід в Instagram Direct (повідомлення)."""
         try:
             logger.info("Переходжу в Direct...")
-            self.driver.get('https://www.instagram.com/direct/inbox/')
+            self.page.goto('https://www.instagram.com/direct/inbox/')
             time.sleep(5)
 
-            current_url = self.driver.current_url
+            current_url = self.page.url
             if 'direct' in current_url:
                 logger.info(f"Успішно відкрито Direct: {current_url}")
                 return True
@@ -539,8 +271,6 @@ class InstagramBot:
 
     def close(self):
         """Закриття браузера та очистка."""
-        global _chrome_pid
-
         # Закриваємо DB
         if self.db:
             try:
@@ -549,25 +279,17 @@ class InstagramBot:
                 pass
             self.db = None
 
-        if self.driver:
+        if self._camoufox:
             try:
-                self.driver.quit()
-                logger.info("Браузер закрито")
+                self._camoufox.__exit__(None, None, None)
+                logger.info("Camoufox браузер закрито")
             except Exception as e:
-                logger.warning(f"Помилка закриття браузера: {e}")
+                logger.warning(f"Помилка закриття Camoufox: {e}")
+            self._camoufox = None
+            self.browser = None
+            self.context = None
+            self.page = None
             self.driver = None
-
-        # Скидаємо PID
-        _chrome_pid = None
-
-        if self.temp_profile_dir and Path(self.temp_profile_dir).exists():
-            try:
-                time.sleep(2)
-                shutil.rmtree(self.temp_profile_dir, ignore_errors=True)
-                logger.info("Тимчасовий профіль видалено")
-            except Exception as e:
-                logger.warning(f"Не вдалося видалити профіль: {e}")
-            self.temp_profile_dir = None
 
     def _notify_telegram(self, message: str):
         """Відправити повідомлення в Telegram про помилку"""
@@ -619,7 +341,6 @@ class InstagramBot:
                     logger.error("Сесія не валідна! Перевір session файл.")
                     self._notify_telegram(f"Сесія не валідна: {session_name}\nПотрібно перезайти в акаунт!")
                     self.close()
-                    _kill_all_chrome()
                     return False  # Не перезапускаємо - потрібен ручний логін
 
                 logger.info("Успішно залогінено в Instagram!")
@@ -654,7 +375,6 @@ class InstagramBot:
                 # Ітерація завершена — закриваємо браузер і чекаємо
                 logger.info(f"Ітерація завершена. Закриваю браузер, чекаю {check_interval}с...")
                 self.close()
-                _kill_all_chrome()
                 heartbeat("Очікування між ітераціями")
                 time.sleep(check_interval)
                 restart_count = 0  # Не помилка — скидаємо лічильник
@@ -662,7 +382,6 @@ class InstagramBot:
             except KeyboardInterrupt:
                 logger.info("Зупинка за запитом користувача (Ctrl+C)")
                 self.close()
-                _kill_all_chrome()
                 stop_watchdog()
                 return True
 
@@ -673,9 +392,6 @@ class InstagramBot:
 
                 # Закриваємо браузер
                 self.close()
-
-                # Вбиваємо ВСІ Chrome процеси
-                _kill_all_chrome()
 
                 restart_count += 1
 
@@ -694,7 +410,6 @@ class InstagramBot:
             logger.error("Щось серйозно не так. Перевір сесію/інтернет.")
             logger.error("=" * 60)
             self._notify_telegram(f"Бот зупинено: досягнуто ліміт {max_restarts} перезапусків!")
-            _kill_all_chrome()
 
         stop_watchdog()
         return False

@@ -1,6 +1,6 @@
 """
 Instagram Direct Handler
-Читання та відправка повідомлень в Direct через Selenium
+Читання та відправка повідомлень в Direct через Camoufox (Playwright)
 """
 import os
 import time
@@ -10,13 +10,9 @@ import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from selenium.webdriver.common.by import By
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 load_dotenv()
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +48,17 @@ class DirectHandler:
     def go_to_location(self, url: str) -> bool:
         """Перехід на конкретну сторінку Direct (inbox/requests/hidden)."""
         try:
-            self.driver.get(url)
+            self.driver.goto(url)
             time.sleep(3)
 
             # Чекаємо завантаження чатів — на inbox це role="listitem",
             # на requests/hidden це role="button" всередині списку
             try:
-                WebDriverWait(self.driver, 10).until(
-                    lambda d: d.find_elements(By.XPATH, "//div[@role='listitem']")
-                    or d.find_elements(By.XPATH, "//div[@role='button'][@tabindex='0']")
+                self.driver.wait_for_selector(
+                    "xpath=//div[@role='listitem'] | //div[@role='button'][@tabindex='0']",
+                    timeout=10000
                 )
-            except Exception:
-                # Можливо чатів немає на цій сторінці — це нормально
+            except PlaywrightTimeoutError:
                 logger.info(f"Чатів не знайдено на {url} (сторінка порожня)")
 
             logger.info(f"Відкрито: {url}")
@@ -94,7 +89,7 @@ class DirectHandler:
     #
     #         for indicator in unread_indicators:
     #             try:
-    #                 inner_text = indicator.text.strip()
+    #                 inner_text = indicator.inner_text().strip()
     #                 if 'unread' not in inner_text.lower():
     #                     continue
     #
@@ -117,13 +112,13 @@ class DirectHandler:
     #
     #                 username = "unknown"
     #                 try:
-    #                     title_span = clickable.find_element(By.XPATH, ".//span[@title]")
+    #                     title_span = clickable.locator("xpath=.//span[@title]").first
     #                     username = title_span.get_attribute('title')
     #                 except Exception:
     #                     try:
-    #                         spans = clickable.find_elements(By.XPATH, ".//span")
+    #                         spans = clickable.locator("xpath=.//span").all()
     #                         for span in spans:
-    #                             text = span.text.strip()
+    #                             text = span.inner_text().strip()
     #                             if text and text.lower() != 'unread' and len(text) > 1:
     #                                 username = text
     #                                 break
@@ -132,7 +127,7 @@ class DirectHandler:
     #
     #                 href = None
     #                 try:
-    #                     link = clickable.find_element(By.XPATH, ".//a[contains(@href, '/direct/')]")
+    #                     link = clickable.locator("xpath=.//a[contains(@href, '/direct/').first]")
     #                     href = link.get_attribute('href')
     #                 except Exception:
     #                     pass
@@ -162,7 +157,7 @@ class DirectHandler:
         chats = []
         try:
             # Шукаємо всі span з title — це імена користувачів у списку чатів
-            title_spans = self.driver.find_elements(By.XPATH, "//span[@title]")
+            title_spans = self.driver.locator("xpath=//span[@title]").all()
 
             logger.info(f"[DEBUG] Знайдено {len(title_spans)} span[@title] на сторінці")
 
@@ -175,17 +170,13 @@ class DirectHandler:
                     # Піднімаємось до клікабельного контейнера
                     clickable = None
                     try:
-                        clickable = title_span.find_element(
-                            By.XPATH, "./ancestor::div[@role='button']"
-                        )
+                        clickable = title_span.locator("xpath=./ancestor::div[@role='button']").first
                     except Exception:
                         pass
 
                     if clickable is None:
                         try:
-                            clickable = title_span.find_element(
-                                By.XPATH, "./ancestor::div[@role='listitem']"
-                            )
+                            clickable = title_span.locator("xpath=./ancestor::div[@role='listitem']").first
                         except Exception:
                             pass
 
@@ -195,7 +186,7 @@ class DirectHandler:
                     # Шукаємо href якщо є
                     href = None
                     try:
-                        link = clickable.find_element(By.XPATH, ".//a[contains(@href, '/direct/')]")
+                        link = clickable.locator("xpath=.//a[contains(@href, '/direct/').first]")
                         href = link.get_attribute('href')
                     except Exception:
                         pass
@@ -227,9 +218,7 @@ class DirectHandler:
         """
         try:
             # Кнопка Accept — div[@role='button'] з прямим текстом "Accept"
-            accept_buttons = self.driver.find_elements(
-                By.XPATH, "//div[@role='button'][text()='Accept']"
-            )
+            accept_buttons = self.driver.locator("xpath=//div[@role='button'][text()='Accept']").all()
 
             if not accept_buttons:
                 logger.info("Кнопка Accept не знайдена (це звичайний чат)")
@@ -241,9 +230,7 @@ class DirectHandler:
 
             # Чекаємо поки чат повністю завантажиться (textbox з'явиться)
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
-                )
+                self.driver.wait_for_selector("xpath=//div[@role='textbox']", timeout=10000)
                 logger.info("Чат завантажено після Accept (textbox знайдено)")
             except Exception:
                 logger.warning("Textbox не з'явився після Accept, чекаємо ще...")
@@ -299,13 +286,11 @@ class DirectHandler:
     def open_chat(self, chat_href: str) -> bool:
         """Відкрити конкретний чат."""
         try:
-            self.driver.get(chat_href)
+            self.driver.goto(chat_href)
             time.sleep(2)
 
             # Чекаємо завантаження чату
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
-            )
+            self.driver.wait_for_selector("xpath=//div[@role='textbox']", timeout=10000)
 
             logger.info(f"Чат відкрито: {chat_href}")
             return True
@@ -321,18 +306,16 @@ class DirectHandler:
         messages = []
         try:
             # Шукаємо всі повідомлення в чаті
-            message_elements = self.driver.find_elements(
-                By.XPATH, "//div[contains(@class, 'x1lliihq')]//span"
-            )
+            message_elements = self.driver.locator("xpath=//div[contains(@class, 'x1lliihq')]//span").all()
 
             for msg_elem in message_elements:
                 try:
-                    content = msg_elem.text
+                    content = msg_elem.inner_text()
                     if not content or len(content) < 1:
                         continue
 
                     # Визначаємо чи це наше повідомлення чи клієнта
-                    parent = msg_elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'message')]")
+                    parent = msg_elem.locator("xpath=./ancestor::div[contains(@class, 'message').first]")
                     is_own = 'own' in parent.get_attribute('class').lower() if parent else False
 
                     messages.append({
@@ -362,10 +345,7 @@ class DirectHandler:
            (В Instagram DM: чужі повідомлення зліва, свої справа)
         """
         try:
-            return self.driver.execute_script("""
-                var msg = arguments[0];
-                var botUsername = arguments[1];
-
+            return msg_element.evaluate("""(msg, botUsername) => {
                 // === СТРАТЕГІЯ 1: Profile link ===
                 var current = msg;
                 for (var i = 0; i < 8; i++) {
@@ -417,7 +397,7 @@ class DirectHandler:
 
                 // Якщо центр повідомлення лівіше за центр контейнера → користувач
                 return msgCenter < containerCenter;
-            """, msg_element, self.bot_username)
+            }""", self.bot_username)
         except Exception as e:
             logger.error(f"Помилка визначення відправника: {e}")
             return False
@@ -434,20 +414,16 @@ class DirectHandler:
         all_messages = []
 
         # === ТЕКСТОВІ ПОВІДОМЛЕННЯ ===
-        msg_divs = self.driver.find_elements(
-            By.XPATH, "//div[@role='presentation']//div[@dir='auto']"
-        )
+        msg_divs = self.driver.locator("xpath=//div[@role='presentation']//div[@dir='auto']").all()
         if not msg_divs:
-            msg_divs = self.driver.find_elements(
-                By.XPATH, "//span[@dir='auto']//div[@dir='auto']"
-            )
+            msg_divs = self.driver.locator("xpath=//span[@dir='auto']//div[@dir='auto']").all()
 
         for msg_div in msg_divs:
-            text = msg_div.text.strip()
+            text = msg_div.inner_text().strip()
             if not text:
                 continue
             is_from_user = self._is_message_from_user(msg_div, chat_username)
-            y = msg_div.location.get('y', 0)
+            y = (msg_div.bounding_box() or {}).get('y', 0)
             all_messages.append({
                 'content': text,
                 'is_from_user': is_from_user,
@@ -462,10 +438,7 @@ class DirectHandler:
         # Instagram показує відео в DM як img-thumbnail + playButton.png (без <video> тегу!)
         # Тому тут визначаємо: якщо є playButton поруч → це відео, інакше → фото
         try:
-            all_page_imgs = self.driver.find_elements(
-                By.XPATH,
-                "//img[not(@alt='user-profile-picture')]"
-            )
+            all_page_imgs = self.driver.locator("xpath=//img[not(@alt='user-profile-picture')]").all()
             logger.info(f"📷 Пошук зображень: знайдено {len(all_page_imgs)} img на сторінці")
             for img in all_page_imgs:
                 try:
@@ -480,9 +453,7 @@ class DirectHandler:
                     h = int(img.get_attribute('height') or '0')
                     if w < 50 or h < 50:
                         try:
-                            natural = self.driver.execute_script(
-                                "return [arguments[0].naturalWidth, arguments[0].naturalHeight]", img
-                            )
+                            natural = img.evaluate("el => [el.naturalWidth, el.naturalHeight]")
                             w, h = natural[0], natural[1]
                         except Exception:
                             pass
@@ -492,8 +463,7 @@ class DirectHandler:
                     # Перевіряємо чи це відео (playButton.png поруч або t15.3394-10 в URL)
                     is_video = False
                     try:
-                        is_video = self.driver.execute_script("""
-                            var img = arguments[0];
+                        is_video = img.evaluate("""(img) => {
                             // Піднімаємось до контейнера повідомлення (div[role='button'])
                             var container = img;
                             for (var i = 0; i < 10; i++) {
@@ -510,20 +480,18 @@ class DirectHandler:
                             var src = img.getAttribute('src') || '';
                             if (src.indexOf('/t15.3394-10/') !== -1) return true;
                             return false;
-                        """, img)
+                        }""")
                     except Exception:
                         pass
 
                     is_from_user = self._is_message_from_user(img, chat_username)
-                    y = img.location.get('y', 0)
+                    y = (img.bounding_box() or {}).get('y', 0)
 
                     if is_video:
                         # Знаходимо клікабельний контейнер div[role='button'] для відео
                         video_click_container = img
                         try:
-                            video_click_container = img.find_element(
-                                By.XPATH, "./ancestor::div[@role='button']"
-                            )
+                            video_click_container = img.locator("xpath=./ancestor::div[@role='button']").first
                         except Exception:
                             pass
 
@@ -557,22 +525,16 @@ class DirectHandler:
         # Instagram НЕ зберігає <audio> в DOM — аудіо завантажується при кліку Play.
         # Тому шукаємо UI-маркери: waveform SVG або audio progress bar.
         try:
-            voice_waveforms = self.driver.find_elements(
-                By.XPATH,
-                "//svg[@aria-label='Waveform for audio message']"
-            )
+            voice_waveforms = self.driver.locator("xpath=//svg[@aria-label='Waveform for audio message']").all()
             if not voice_waveforms:
                 # Fallback: audio progress bar
-                voice_waveforms = self.driver.find_elements(
-                    By.XPATH,
-                    "//div[@aria-label='Audio progress bar']"
-                )
+                voice_waveforms = self.driver.locator("xpath=//div[@aria-label='Audio progress bar']").all()
             logger.info(f"🎤 Пошук голосових: знайдено {len(voice_waveforms)} голосових повідомлень")
 
             for waveform in voice_waveforms:
                 try:
                     is_from_user = self._is_message_from_user(waveform, chat_username)
-                    y = waveform.location.get('y', 0)
+                    y = (waveform.bounding_box() or {}).get('y', 0)
                     all_messages.append({
                         'content': '[Голосове]',
                         'is_from_user': is_from_user,
@@ -594,10 +556,7 @@ class DirectHandler:
         # Основний пошук відео тепер через thumbnail+playButton (вище).
         # Цей блок — fallback для випадків коли <video> тег вже є в DOM.
         try:
-            video_elements = self.driver.find_elements(
-                By.XPATH,
-                "//div[@role='presentation']//video | //div[contains(@class,'x78zum5')]//video"
-            )
+            video_elements = self.driver.locator("xpath=//div[@role='presentation']//video | //div[contains(@class,'x78zum5')]//video").all()
             # Y-позиції вже знайдених відео та голосових — для дедуплікації
             voice_y_positions = {m['y_position'] for m in all_messages if m['message_type'] == 'voice'}
             video_y_positions = {m['y_position'] for m in all_messages if m['message_type'] == 'video'}
@@ -605,13 +564,13 @@ class DirectHandler:
 
             for video_el in video_elements:
                 try:
-                    y = video_el.location.get('y', 0)
+                    y = (video_el.bounding_box() or {}).get('y', 0)
                     # Пропускаємо якщо вже знайдено (через thumbnail або голосове)
                     is_duplicate = any(abs(y - vy) < 50 for vy in voice_y_positions | video_y_positions)
                     if is_duplicate:
                         continue
-                    w = video_el.size.get('width', 0)
-                    h = video_el.size.get('height', 0)
+                    w = (video_el.bounding_box() or {}).get('width', 0)
+                    h = (video_el.bounding_box() or {}).get('height', 0)
                     if w < 80 or h < 80:
                         continue
 
@@ -636,16 +595,13 @@ class DirectHandler:
         # Ідентифікація: лінк _a6hd з href="/stories/username/..."
         # Витягуємо: username автора сторіз, превʼю-зображення, текст "Shared X's story"
         try:
-            story_links = self.driver.find_elements(
-                By.CSS_SELECTOR, 'a._a6hd[role="link"][href*="/stories/"]'
-            )
+            story_links = self.driver.locator('a._a6hd[role="link"][href*="/stories/"]').all()
             seen_stories = set()  # Дедуплікація
 
             valid_stories = 0
             for story_el in story_links:
                 try:
-                    story_data = self.driver.execute_script("""
-                        var link = arguments[0];
+                    story_data = story_el.evaluate("""(link) => {
                         var href = link.getAttribute('href') || '';
 
                         // Витягуємо username автора сторіз з /stories/username/id...
@@ -686,7 +642,7 @@ class DirectHandler:
                         }
 
                         return {storyAuthor: storyAuthor, imageUrl: imageUrl, storyText: storyText};
-                    """, story_el)
+                    }""")
 
                     if not story_data:
                         continue
@@ -707,7 +663,7 @@ class DirectHandler:
 
                     # Сторіз завжди від користувача — бот відповідає лише текстом
                     is_from_user = True
-                    y = story_el.location.get('y', 0)
+                    y = (story_el.bounding_box() or {}).get('y', 0)
 
                     content = f"[Сторіз від @{story_author}]"
                     if story_text:
@@ -739,14 +695,13 @@ class DirectHandler:
         # Фільтрація: тільки всередині повідомлень чату (є sender profile link + велике фото)
         # НЕ включає /stories/ — вони обробляються вище
         try:
-            post_links = self.driver.find_elements(By.CSS_SELECTOR, 'a._a6hd[role="link"]')
+            post_links = self.driver.locator('a._a6hd[role="link"]').all()
             seen_captions = set()  # Дедуплікація
 
             valid_posts = 0
             for link_el in post_links:
                 try:
-                    post_data = self.driver.execute_script("""
-                        var link = arguments[0];
+                    post_data = link_el.evaluate("""(link) => {
                         var href = link.getAttribute('href') || '';
 
                         // Пропускаємо сторіз — вони обробляються окремо
@@ -808,7 +763,7 @@ class DirectHandler:
                         }
 
                         return {postAuthor: postAuthor, caption: caption, imageUrl: imageUrl};
-                    """, link_el)
+                    }""")
 
                     if not post_data:
                         continue
@@ -828,7 +783,7 @@ class DirectHandler:
 
                     # Пост завжди від користувача — бот відповідає лише текстом
                     is_from_user = True
-                    y = link_el.location.get('y', 0)
+                    y = (link_el.bounding_box() or {}).get('y', 0)
 
                     content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
 
@@ -933,14 +888,10 @@ class DirectHandler:
         """Закрити overlay перегляду зображення (кілька стратегій)."""
         # Стратегія 1: Keys.ESCAPE через ActionChains (надійніше ніж body.send_keys)
         try:
-            from selenium.webdriver.common.action_chains import ActionChains
-            ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+            self.driver.keyboard.press("Escape")
             time.sleep(1)
             # Перевіряємо чи закрився — шукаємо кнопку закриття, якщо є — не закрився
-            close_btns = self.driver.find_elements(
-                By.XPATH,
-                "//svg[@aria-label='Закрыть' or @aria-label='Закрити' or @aria-label='Close']"
-            )
+            close_btns = self.driver.locator("xpath=//svg[@aria-label='Закрыть' or @aria-label='Закрити' or @aria-label='Close']").all()
             if not close_btns:
                 logger.info("Viewer закрито через Escape")
                 return
@@ -950,9 +901,7 @@ class DirectHandler:
         # Стратегія 2: Клік на хрестик (SVG з aria-label)
         for label in ['Закрыть', 'Закрити', 'Close']:
             try:
-                close_btn = self.driver.find_element(
-                    By.XPATH, f"//svg[@aria-label='{label}']"
-                )
+                close_btn = self.driver.locator(f"xpath=//svg[@aria-label='{label}']").first
                 close_btn.click()
                 time.sleep(1)
                 logger.info(f"Viewer закрито кліком на '{label}'")
@@ -963,9 +912,7 @@ class DirectHandler:
         # Стратегія 3: Клік на title елемент всередині SVG
         for label in ['Закрыть', 'Закрити', 'Close']:
             try:
-                close_btn = self.driver.find_element(
-                    By.XPATH, f"//svg[title='{label}']"
-                )
+                close_btn = self.driver.locator(f"xpath=//svg[title='{label}']").first
                 close_btn.click()
                 time.sleep(1)
                 logger.info(f"Viewer закрито через title '{label}'")
@@ -975,9 +922,9 @@ class DirectHandler:
 
         # Стратегія 4: body.send_keys (старий спосіб)
         try:
-            self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+            self.driver.keyboard.press("Escape")
             time.sleep(1)
-            logger.info("Viewer закрито через body.send_keys(ESC)")
+            logger.info("Viewer закрито через body.type(ESC)")
         except Exception:
             logger.warning("Не вдалося закрити viewer жодним способом")
 
@@ -994,36 +941,31 @@ class DirectHandler:
         """
         screenshots = []
         try:
-            duration = self.driver.execute_script("return arguments[0].duration;", video_element)
+            duration = video_element.evaluate("el => el.duration")
             if not duration or duration <= 0:
                 logger.warning(f"🎬 [{label}] Не вдалося отримати тривалість, робимо один скріншот")
-                screenshot = video_element.screenshot_as_png
+                screenshot = video_element.screenshot()
                 if screenshot:
                     screenshots.append(screenshot)
                 return screenshots
 
             logger.info(f"🎬 [{label}] Тривалість: {duration:.1f} сек")
-            self.driver.execute_script("arguments[0].pause();", video_element)
+            video_element.evaluate("el => el.pause()")
             time.sleep(0.3)
 
             max_screenshots = 12
             step = 5
             current_time = 0
             while current_time < duration and len(screenshots) < max_screenshots:
-                self.driver.execute_script(
-                    "arguments[0].currentTime = arguments[1];", video_element, current_time
-                )
+                video_element.evaluate("(el, t) => { el.currentTime = t; }", current_time)
                 time.sleep(0.5)
                 try:
-                    WebDriverWait(self.driver, 3).until(
-                        lambda d: d.execute_script(
-                            "return !arguments[0].seeking;", video_element
-                        )
-                    )
+                    if video_element.evaluate("el => el.seeking"):
+                        time.sleep(1)
                 except Exception:
                     time.sleep(1)
 
-                screenshot = video_element.screenshot_as_png
+                screenshot = video_element.screenshot()
                 if screenshot:
                     screenshots.append(screenshot)
                     logger.info(f"🎬 [{label}] Скріншот @ {current_time:.0f}с ({len(screenshot)} байт)")
@@ -1034,19 +976,14 @@ class DirectHandler:
             last_captured = current_time - step
             if last_captured + 2 < duration and len(screenshots) < max_screenshots:
                 final_time = max(duration - 0.5, 0)
-                self.driver.execute_script(
-                    "arguments[0].currentTime = arguments[1];", video_element, final_time
-                )
+                video_element.evaluate("(el, t) => { el.currentTime = t; }", final_time)
                 time.sleep(0.5)
                 try:
-                    WebDriverWait(self.driver, 3).until(
-                        lambda d: d.execute_script(
-                            "return !arguments[0].seeking;", video_element
-                        )
-                    )
+                    if video_element.evaluate("el => el.seeking"):
+                        time.sleep(1)
                 except Exception:
                     time.sleep(1)
-                screenshot = video_element.screenshot_as_png
+                screenshot = video_element.screenshot()
                 if screenshot:
                     screenshots.append(screenshot)
                     logger.info(f"🎬 [{label}] Фінальний скріншот @ {final_time:.1f}с ({len(screenshot)} байт)")
@@ -1056,7 +993,7 @@ class DirectHandler:
         except Exception as e:
             logger.warning(f"🎬 [{label}] Помилка при захопленні відео: {e}")
             try:
-                screenshot = video_element.screenshot_as_png
+                screenshot = video_element.screenshot()
                 if screenshot:
                     screenshots.append(screenshot)
             except Exception:
@@ -1087,7 +1024,7 @@ class DirectHandler:
             list[bytes] — список PNG скріншотів (порожній якщо сторіз expired)
         """
         screenshots = []
-        current_url = self.driver.current_url
+        current_url = self.driver.url
 
         try:
             logger.info("📖 Відкриваємо сторіз для захоплення контенту...")
@@ -1102,7 +1039,7 @@ class DirectHandler:
             # Визначаємо тип: відео чи фото
             video_el = None
             try:
-                video_el = self.driver.find_element(By.CSS_SELECTOR, "video")
+                video_el = self.driver.locator("video").first
                 logger.info("📖 Знайдено відео в сторіз")
             except Exception:
                 logger.info("📖 Відео не знайдено, це фото-сторіз")
@@ -1115,13 +1052,13 @@ class DirectHandler:
                     img_element = None
                     for selector in ["img[style*='object-fit']", "div[role='dialog'] img", "img[crossorigin]"]:
                         try:
-                            img_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            if img_element and img_element.size.get("width", 0) > 50:
+                            img_element = self.driver.locator(selector).first
+                            if img_element and (img_element.bounding_box() or {}).get("width", 0) > 50:
                                 break
                         except Exception:
                             continue
                     if img_element:
-                        screenshot = img_element.screenshot_as_png
+                        screenshot = img_element.screenshot()
                         if screenshot:
                             screenshots.append(screenshot)
                             logger.info(f"📖 Скріншот фото-сторіз: {len(screenshot)} байт")
@@ -1136,13 +1073,13 @@ class DirectHandler:
             logger.error(f"📖 Помилка при захопленні сторіз: {e}")
         finally:
             try:
-                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                self.driver.keyboard.press("Escape")
                 time.sleep(1)
             except Exception:
                 pass
             try:
-                if self.driver.current_url != current_url:
-                    self.driver.get(current_url)
+                if self.driver.url != current_url:
+                    self.driver.goto(current_url)
                     time.sleep(2)
             except Exception:
                 pass
@@ -1159,7 +1096,7 @@ class DirectHandler:
             list[bytes] — список PNG скріншотів
         """
         screenshots = []
-        current_url = self.driver.current_url
+        current_url = self.driver.url
 
         try:
             logger.info("📎 Відкриваємо пост для захоплення контенту...")
@@ -1169,16 +1106,16 @@ class DirectHandler:
             container = post_element
             for _ in range(10):
                 try:
-                    container = container.find_element(By.XPATH, "..")
+                    container = container.locator("xpath=..").first
                 except Exception:
                     break
                 # Шукаємо img з CDN URL всередині контейнера
                 try:
-                    imgs = container.find_elements(By.TAG_NAME, "img")
+                    imgs = container.locator("img").all()
                     for img in imgs:
                         src = img.get_attribute('src') or ''
-                        w = img.size.get('width', 0)
-                        h = img.size.get('height', 0)
+                        w = (img.bounding_box() or {}).get('width', 0)
+                        h = (img.bounding_box() or {}).get('height', 0)
                         if ('cdninstagram' in src or 'fbcdn' in src) and w > 50 and h > 50:
                             clickable = img
                             logger.info(f"📎 Знайдено превʼю поста для кліку: {w}x{h}")
@@ -1203,7 +1140,7 @@ class DirectHandler:
             # Визначаємо тип: відео чи фото
             video_el = None
             try:
-                video_el = self.driver.find_element(By.CSS_SELECTOR, "div[role='dialog'] video, article video, video")
+                video_el = self.driver.locator("div[role='dialog'] video, article video, video").first
                 logger.info("📎 Знайдено відео в пості")
             except Exception:
                 logger.info("📎 Відео не знайдено, це фото-пост")
@@ -1222,10 +1159,10 @@ class DirectHandler:
                         "article img",
                     ]:
                         try:
-                            imgs = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            imgs = self.driver.locator(selector).all()
                             for img in imgs:
-                                w = img.size.get('width', 0)
-                                h = img.size.get('height', 0)
+                                w = (img.bounding_box() or {}).get('width', 0)
+                                h = (img.bounding_box() or {}).get('height', 0)
                                 if w * h > best_size and w > 50 and h > 50:
                                     best_size = w * h
                                     img_element = img
@@ -1233,7 +1170,7 @@ class DirectHandler:
                             continue
 
                     if img_element:
-                        screenshot = img_element.screenshot_as_png
+                        screenshot = img_element.screenshot()
                         if screenshot:
                             screenshots.append(screenshot)
                             logger.info(f"📎 Скріншот фото-поста: {len(screenshot)} байт")
@@ -1248,13 +1185,13 @@ class DirectHandler:
             logger.error(f"📎 Помилка при захопленні поста: {e}")
         finally:
             try:
-                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                self.driver.keyboard.press("Escape")
                 time.sleep(1)
             except Exception:
                 pass
             try:
-                if self.driver.current_url != current_url:
-                    self.driver.get(current_url)
+                if self.driver.url != current_url:
+                    self.driver.goto(current_url)
                     time.sleep(2)
             except Exception:
                 pass
@@ -1293,9 +1230,7 @@ class DirectHandler:
                 else:
                     # Fallback: піднімаємось до div[role='button']
                     try:
-                        click_target = video_container.find_element(
-                            By.XPATH, "./ancestor::div[@role='button']"
-                        )
+                        click_target = video_container.locator("xpath=./ancestor::div[@role='button']").first
                         logger.info("🎬 Клік на div[role='button'] батька відео...")
                     except Exception:
                         logger.info("🎬 Клік на сам елемент відео...")
@@ -1306,7 +1241,7 @@ class DirectHandler:
                 # Шукаємо <video> в overlay (повноекранний viewer)
                 # Overlay зазвичай містить більший video елемент
                 overlay_video = None
-                all_videos = self.driver.find_elements(By.TAG_NAME, "video")
+                all_videos = self.driver.locator("video").all()
                 logger.info(f"🎬 Після кліку: знайдено {len(all_videos)} video елементів")
 
                 if len(all_videos) > 0:
@@ -1315,8 +1250,8 @@ class DirectHandler:
                     best_area = 0
                     for v in all_videos:
                         try:
-                            w = v.size.get('width', 0)
-                            h = v.size.get('height', 0)
+                            w = (v.bounding_box() or {}).get('width', 0)
+                            h = (v.bounding_box() or {}).get('height', 0)
                             area = w * h
                             logger.info(f"🎬   video: {w}x{h}, area={area}")
                             if area > best_area:
@@ -1333,10 +1268,7 @@ class DirectHandler:
                 if overlay_video:
                     # Натискаємо play щоб відео завантажилось
                     try:
-                        self.driver.execute_script("""
-                            var v = arguments[0];
-                            if (v.paused) v.play();
-                        """, overlay_video)
+                        overlay_video.evaluate("(v) => { if (v.paused) v.play(); }")
                         time.sleep(1.5)
                     except Exception:
                         pass
@@ -1361,14 +1293,14 @@ class DirectHandler:
             logger.info("🎬 Fallback: скріншотимо відео прямо в чаті")
             video_el = None
             try:
-                video_el = video_container.find_element(By.TAG_NAME, "video")
+                video_el = video_container.locator("video").first
             except Exception:
                 # Піднімаємось по DOM
                 container = video_container
                 for _ in range(5):
                     try:
-                        container = container.find_element(By.XPATH, "..")
-                        video_el = container.find_element(By.TAG_NAME, "video")
+                        container = container.locator("xpath=..").first
+                        video_el = container.locator("video").first
                         break
                     except Exception:
                         continue
@@ -1406,9 +1338,7 @@ class DirectHandler:
             try:
                 # Знаходимо клікабельний батьківський div[role='button'] для зображення
                 try:
-                    click_target = img_element.find_element(
-                        By.XPATH, "./ancestor::div[@role='button']"
-                    )
+                    click_target = img_element.locator("xpath=./ancestor::div[@role='button']").first
                     logger.info("Клік на div[role='button'] батька зображення...")
                 except Exception:
                     click_target = img_element
@@ -1419,7 +1349,7 @@ class DirectHandler:
 
                 # Шукаємо НАЙБІЛЬШЕ CDN-зображення на сторінці (viewer показує його великим)
                 fullsize_img = None
-                all_imgs = self.driver.find_elements(By.TAG_NAME, 'img')
+                all_imgs = self.driver.locator('img').all()
                 best_img = None
                 best_area = 0
 
@@ -1431,10 +1361,8 @@ class DirectHandler:
                         # Пропускаємо профільні фото
                         if '/t51.2885-19/' in src:
                             continue
-                        dims = self.driver.execute_script(
-                            "var r = arguments[0].getBoundingClientRect();"
-                            "return [r.width, r.height, arguments[0].naturalWidth, arguments[0].naturalHeight]",
-                            img
+                        dims = img.evaluate(
+                            "(el) => { var r = el.getBoundingClientRect(); return [r.width, r.height, el.naturalWidth, el.naturalHeight]; }"
                         )
                         disp_w, disp_h, nat_w, nat_h = dims
                         area = disp_w * disp_h
@@ -1451,20 +1379,20 @@ class DirectHandler:
 
                 if fullsize_img:
                     # Скріншот великого зображення
-                    png_bytes = fullsize_img.screenshot_as_png
+                    png_bytes = fullsize_img.screenshot()
                     logger.info(f"Full-size скріншот: {len(png_bytes)} байт")
 
                     # Також спробуємо завантажити по URL (ще краща якість)
                     fullsize_src = fullsize_img.get_attribute('src') or ''
                     if fullsize_src:
                         try:
-                            selenium_cookies = self.driver.get_cookies()
+                            selenium_cookies = self.driver.context.cookies()
                             cookies = {c['name']: c['value'] for c in selenium_cookies}
                             resp = requests.get(
                                 fullsize_src,
                                 cookies=cookies,
                                 headers={
-                                    'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                                    'User-Agent': self.driver.evaluate("() => navigator.userAgent"),
                                     'Referer': 'https://www.instagram.com/',
                                 },
                                 timeout=15
@@ -1516,13 +1444,13 @@ class DirectHandler:
 
                     if best_url and best_w > 300:
                         logger.info(f"srcset: знайдено URL {best_w}w")
-                        selenium_cookies = self.driver.get_cookies()
+                        selenium_cookies = self.driver.context.cookies()
                         cookies = {c['name']: c['value'] for c in selenium_cookies}
                         resp = requests.get(
                             best_url,
                             cookies=cookies,
                             headers={
-                                'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                                'User-Agent': self.driver.evaluate("() => navigator.userAgent"),
                                 'Referer': 'https://www.instagram.com/',
                             },
                             timeout=15
@@ -1536,7 +1464,7 @@ class DirectHandler:
         # === Спосіб 3: Скріншот маленького елемента (fallback) ===
         if img_element:
             try:
-                png_bytes = img_element.screenshot_as_png
+                png_bytes = img_element.screenshot()
                 if png_bytes and len(png_bytes) > 2000:
                     logger.info(f"Зображення (small screenshot): {len(png_bytes)} байт")
                     return png_bytes
@@ -1545,7 +1473,7 @@ class DirectHandler:
 
         # === Спосіб 4: URL download (original src) ===
         try:
-            selenium_cookies = self.driver.get_cookies()
+            selenium_cookies = self.driver.context.cookies()
             cookies = {c['name']: c['value'] for c in selenium_cookies}
             response = requests.get(
                 img_src,
@@ -1574,13 +1502,13 @@ class DirectHandler:
         Повертає raw bytes аудіо або None.
         """
         try:
-            selenium_cookies = self.driver.get_cookies()
+            selenium_cookies = self.driver.context.cookies()
             cookies = {c['name']: c['value'] for c in selenium_cookies}
             response = requests.get(
                 audio_src,
                 cookies=cookies,
                 headers={
-                    'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                    'User-Agent': self.driver.evaluate("() => navigator.userAgent"),
                     'Referer': 'https://www.instagram.com/',
                 },
                 timeout=15
@@ -1607,8 +1535,7 @@ class DirectHandler:
         """
         try:
             # 1. Знаходимо кнопку Play (поруч з waveform)
-            play_btn = self.driver.execute_script("""
-                var el = arguments[0];
+            play_btn = voice_element.evaluate_handle("""(el) => {
                 var parent = el;
                 for (var i = 0; i < 10; i++) {
                     parent = parent.parentElement;
@@ -1623,7 +1550,7 @@ class DirectHandler:
                     }
                 }
                 return null;
-            """, voice_element)
+            }""").as_element()
 
             if not play_btn:
                 logger.warning("🎤 Кнопка Play не знайдена")
@@ -1632,24 +1559,25 @@ class DirectHandler:
             # 2. Готуємо перехоплення ПЕРЕД кліком Play
 
             # 2a. Resource Timing API — знімок поточних ресурсів
-            self.driver.execute_script(
-                "window.__audioResourcesBefore = performance.getEntriesByType('resource').length;"
+            self.driver.evaluate(
+                "() => { window.__audioResourcesBefore = performance.getEntriesByType('resource').length; }"
             )
 
-            # 2b. CDP Network.enable
-            try:
-                self.driver.execute_cdp_cmd('Network.enable', {})
-            except Exception:
-                pass
+            # 2b. Playwright response listener (замість CDP performance logs)
+            _playwright_audio_urls = []
 
-            # 2c. Очищаємо performance logs
-            try:
-                self.driver.get_log('performance')
-            except Exception:
-                pass
+            def _on_response(response):
+                try:
+                    url = response.url
+                    if 'audioclip' in url or ('cdninstagram' in url and 'audio' in url):
+                        _playwright_audio_urls.append(url)
+                except Exception:
+                    pass
 
-            # 2d. JS monkey-patch (setAttribute + src setter)
-            self.driver.execute_script("""
+            self.driver.on('response', _on_response)
+
+            # 2c. JS monkey-patch (setAttribute + src setter)
+            self.driver.evaluate("""() => {
                 window.__capturedAudioUrls = [];
                 if (!window.__audioInterceptorInstalled) {
                     // Patch src setter
@@ -1677,7 +1605,7 @@ class DirectHandler:
                 } else {
                     window.__capturedAudioUrls = [];
                 }
-            """)
+            }""")
 
             # 3. Натискаємо Play
             logger.info("🎤 Натискаємо Play для захоплення URL аудіо...")
@@ -1689,17 +1617,10 @@ class DirectHandler:
             # 4. Стратегія A: Resource Timing API (найнадійніша)
             # Шукаємо в УСІХ ресурсах (аудіо може бути кешоване з попереднього відтворення)
             try:
-                all_resources = self.driver.execute_script("""
-                    var all = performance.getEntriesByType('resource');
-                    var results = [];
-                    for (var i = 0; i < all.length; i++) {
-                        results.push(all[i].name);
-                    }
-                    return results;
-                """)
-                before_count = self.driver.execute_script(
-                    "return window.__audioResourcesBefore || 0;"
+                all_resources = self.driver.evaluate(
+                    "() => performance.getEntriesByType('resource').map(r => r.name)"
                 )
+                before_count = self.driver.evaluate("() => window.__audioResourcesBefore || 0")
                 new_count = len(all_resources) - before_count
                 logger.info(f"🎤 Resource Timing: {len(all_resources)} всього, {new_count} нових після Play")
 
@@ -1718,35 +1639,26 @@ class DirectHandler:
             except Exception as e:
                 logger.debug(f"🎤 Resource Timing помилка: {e}")
 
-            # 5. Стратегія B: CDP performance logs
+            # 5. Стратегія B: Playwright response listener
             if not audio_url:
                 try:
-                    logs = self.driver.get_log('performance')
-                    logger.info(f"🎤 CDP: {len(logs)} записів в performance logs")
-                    for entry in logs:
-                        try:
-                            log_msg = json.loads(entry['message'])
-                            method = log_msg.get('message', {}).get('method', '')
-                            if method in ('Network.requestWillBeSent', 'Network.responseReceived'):
-                                params = log_msg['message']['params']
-                                url = ''
-                                if 'request' in params:
-                                    url = params['request'].get('url', '')
-                                if 'response' in params:
-                                    url = url or params['response'].get('url', '')
-                                if url and 'audioclip' in url:
-                                    audio_url = url
-                                    logger.info(f"🎤 CDP logs захопив URL: {audio_url[:120]}...")
-                                    break
-                        except Exception:
-                            continue
+                    self.driver.remove_listener('response', _on_response)
+                except Exception:
+                    pass
+                try:
+                    logger.info(f"🎤 Playwright responses: {len(_playwright_audio_urls)} перехоплених")
+                    for url in _playwright_audio_urls:
+                        if 'audioclip' in url or 'cdninstagram' in url or 'fbcdn' in url:
+                            audio_url = url
+                            logger.info(f"🎤 Playwright response захопив URL: {audio_url[:120]}...")
+                            break
                 except Exception as e:
-                    logger.debug(f"🎤 CDP logs недоступні: {e}")
+                    logger.debug(f"🎤 Playwright response listener помилка: {e}")
 
             # 6. Стратегія C: JS monkey-patch результати
             if not audio_url:
                 try:
-                    captured = self.driver.execute_script("return window.__capturedAudioUrls || [];")
+                    captured = self.driver.evaluate("() => window.__capturedAudioUrls || []")
                     logger.info(f"🎤 JS interceptor: {len(captured)} перехоплених URL")
                     for url in captured:
                         if 'audioclip' in url or 'cdninstagram' in url or 'fbcdn' in url:
@@ -1759,7 +1671,7 @@ class DirectHandler:
             # 7. Стратегія D: Пошук <audio> в DOM
             if not audio_url:
                 try:
-                    audio_els = self.driver.find_elements(By.TAG_NAME, 'audio')
+                    audio_els = self.driver.locator('audio').all()
                     logger.info(f"🎤 DOM пошук: знайдено {len(audio_els)} <audio> елементів")
                     for audio_el in audio_els:
                         src = audio_el.get_attribute('src') or ''
@@ -1768,7 +1680,7 @@ class DirectHandler:
                                 audio_url = src
                                 logger.info(f"🎤 DOM <audio>: {audio_url[:100]}...")
                                 break
-                        for source_el in audio_el.find_elements(By.TAG_NAME, 'source'):
+                        for source_el in audio_el.locator('source').all():
                             s = source_el.get_attribute('src') or ''
                             if s and ('cdninstagram' in s or 'fbcdn' in s):
                                 audio_url = s
@@ -1778,10 +1690,15 @@ class DirectHandler:
                 except Exception:
                     pass
 
+            # Знімаємо listener (на випадок якщо Strategy B вже не зняла)
+            try:
+                self.driver.remove_listener('response', _on_response)
+            except Exception:
+                pass
+
             # 8. Ставимо на паузу
             try:
-                pause_btn = self.driver.execute_script("""
-                    var el = arguments[0];
+                pause_btn = voice_element.evaluate_handle("""(el) => {
                     var parent = el;
                     for (var i = 0; i < 10; i++) {
                         parent = parent.parentElement;
@@ -1797,7 +1714,7 @@ class DirectHandler:
                         }
                     }
                     return null;
-                """, voice_element)
+                }""").as_element()
                 if pause_btn:
                     pause_btn.click()
                     logger.info("🎤 Аудіо поставлено на паузу")
@@ -1848,8 +1765,7 @@ class DirectHandler:
             try:
                 # Від div[@dir='auto'] піднімаємось до великого контейнера повідомлення
                 # Шукаємо предка, який містить toolbar div[style*='--x-width: 96px']
-                hover_target = self.driver.execute_script("""
-                    var el = arguments[0];
+                hover_target = message_element.evaluate_handle("""(el) => {
                     var current = el;
                     for (var i = 0; i < 10; i++) {
                         current = current.parentElement;
@@ -1858,14 +1774,13 @@ class DirectHandler:
                         if (toolbar) return current;
                     }
                     return el;
-                """, message_element)
+                }""").as_element() or message_element
             except Exception:
                 pass
 
             # Hover на контейнер повідомлення
             logger.info("Наводимо мишку на повідомлення для Reply...")
-            actions = ActionChains(self.driver)
-            actions.move_to_element(hover_target).perform()
+            hover_target.hover()
             time.sleep(2)
 
             reply_btn = None
@@ -1874,9 +1789,7 @@ class DirectHandler:
             for label in ['Ответьте на сообщение', 'Reply to message', 'Відповісти на повідомлення',
                           'Ответить', 'Reply', 'Відповісти', 'Ответ']:
                 try:
-                    reply_btn = self.driver.find_element(
-                        By.XPATH, f"//*[contains(@aria-label, '{label}')]"
-                    )
+                    reply_btn = self.driver.locator(f"xpath=//*[contains(@aria-label, '{label}')]").first
                     if reply_btn:
                         logger.info(f"Reply знайдено по aria-label '{label}'")
                         break
@@ -1887,9 +1800,7 @@ class DirectHandler:
             if not reply_btn:
                 for label in ['Ответьте', 'Reply', 'Відповісти']:
                     try:
-                        reply_btn = self.driver.find_element(
-                            By.XPATH, f"//*[contains(@title, '{label}')]"
-                        )
+                        reply_btn = self.driver.locator(f"xpath=//*[contains(@title, '{label}')]").first
                         if reply_btn:
                             logger.info(f"Reply знайдено по title '{label}'")
                             break
@@ -1901,18 +1812,16 @@ class DirectHandler:
             # Кнопки: [emoji, reply, more] — Reply = 2-га (індекс 1)
             if not reply_btn:
                 try:
-                    toolbars = self.driver.find_elements(
-                        By.CSS_SELECTOR, "div[style*='--x-width: 96px']"
-                    )
+                    toolbars = self.driver.locator("div[style*='--x-width: 96px']").all()
                     for toolbar in toolbars:
                         # Знаходимо саме SVG елементи (не вкладені контейнери)
-                        svgs = toolbar.find_elements(By.CSS_SELECTOR, "svg")
+                        svgs = toolbar.locator("svg").all()
                         if svgs:
                             logger.info(f"Toolbar знайдено з {len(svgs)} SVG іконками")
                             # Reply = 2-га SVG іконка (індекс 1)
                             if len(svgs) >= 2:
                                 # Клікаємо на батька SVG (span/div кнопку)
-                                reply_btn = svgs[1].find_element(By.XPATH, "..")
+                                reply_btn = svgs[1].locator("xpath=..").first
                                 logger.info(f"Reply кнопка знайдена (SVG позиція 2 з {len(svgs)})")
                             break
                 except Exception as e:
@@ -1935,9 +1844,7 @@ class DirectHandler:
         """Відправити повідомлення в поточний чат."""
         try:
             # Шукаємо поле вводу
-            textbox = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
-            )
+            textbox = self.driver.wait_for_selector("xpath=//div[@role='textbox']", timeout=10000)
 
             # Клікаємо на поле
             textbox.click()
@@ -1947,15 +1854,15 @@ class DirectHandler:
             # \n → Shift+Enter (новий рядок в тому ж повідомленні, не відправка)
             for char in text:
                 if char == '\n':
-                    ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(Keys.RETURN).key_up(Keys.SHIFT).perform()
+                    self.driver.keyboard.press("Shift+Enter")
                 else:
-                    textbox.send_keys(char)
+                    textbox.type(char)
                 time.sleep(random.uniform(0.02, 0.08))
 
             time.sleep(0.5)
 
             # Відправляємо (Enter)
-            textbox.send_keys(Keys.RETURN)
+            textbox.press("Enter")
             time.sleep(1)
 
             logger.info(f"Повідомлення відправлено: {text[:50]}...")
@@ -1987,7 +1894,7 @@ class DirectHandler:
                 return False
 
             abs_path = os.path.abspath(image_path)
-            file_input.send_keys(abs_path)
+            file_input.type(abs_path)
             logger.info(f"Файл завантажено: {abs_path}")
 
             # Чекаємо поки з'явиться preview
@@ -2039,8 +1946,8 @@ class DirectHandler:
             image_url = self._convert_gdrive_url(image_url)
 
             # Завантажуємо зображення
-            cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
-            headers = {'User-Agent': self.driver.execute_script("return navigator.userAgent")}
+            cookies = {c['name']: c['value'] for c in self.driver.context.cookies()}
+            headers = {'User-Agent': self.driver.evaluate("() => navigator.userAgent")}
             resp = requests.get(image_url, cookies=cookies, headers=headers, timeout=15)
 
             if resp.status_code != 200 or len(resp.content) < 1000:
@@ -2084,7 +1991,7 @@ class DirectHandler:
         """
         # Стратегія 1: вже є видимий input
         try:
-            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            inputs = self.driver.locator("input[type='file']").all()
             for inp in inputs:
                 if inp.is_enabled():
                     return inp
@@ -2093,9 +2000,8 @@ class DirectHandler:
 
         # Стратегія 2: клікаємо кнопку фото/галерея в тулбарі
         try:
-            photo_btns = self.driver.find_elements(
-                By.XPATH,
-                "//div[@role='textbox']/ancestor::form//button | "
+            photo_btns = self.driver.locator(
+                "xpath=//div[@role='textbox']/ancestor::form//button | "
                 "//div[@role='textbox']/ancestor::div[contains(@class,'x')]//svg["
                 "contains(@aria-label,'photo') or contains(@aria-label,'image') or "
                 "contains(@aria-label,'фото') or contains(@aria-label,'зображення') or "
@@ -2103,7 +2009,7 @@ class DirectHandler:
                 "contains(@aria-label,'Add')]/ancestor::button | "
                 "//div[@role='textbox']/ancestor::div[contains(@class,'x')]"
                 "//svg[contains(@aria-label,'Photo')]/ancestor::div[@role='button']"
-            )
+            ).all()
             for btn in photo_btns:
                 try:
                     btn.click()
@@ -2111,7 +2017,7 @@ class DirectHandler:
                     break
                 except Exception:
                     continue
-            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            inputs = self.driver.locator("input[type='file']").all()
             for inp in inputs:
                 if inp.is_enabled():
                     return inp
@@ -2120,7 +2026,7 @@ class DirectHandler:
 
         # Стратегія 3: JS — робимо input видимим
         try:
-            self.driver.execute_script("""
+            self.driver.evaluate("""() => {
                 var inputs = document.querySelectorAll('input[type="file"]');
                 for (var i = 0; i < inputs.length; i++) {
                     inputs[i].style.display = 'block';
@@ -2130,9 +2036,9 @@ class DirectHandler:
                     inputs[i].style.left = '0';
                     inputs[i].style.zIndex = '99999';
                 }
-            """)
+            }""")
             time.sleep(0.5)
-            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            inputs = self.driver.locator("input[type='file']").all()
             for inp in inputs:
                 if inp.is_enabled():
                     return inp
@@ -2148,9 +2054,9 @@ class DirectHandler:
             "//div[@role='button'][contains(.,'Send') or contains(.,'Надіслати')]"
         ]:
             try:
-                btns = self.driver.find_elements(By.XPATH, xpath)
+                btns = self.driver.locator(f"xpath={xpath}").all()
                 for btn in btns:
-                    if btn.is_displayed():
+                    if btn.is_visible():
                         btn.click()
                         return True
             except Exception:
@@ -2185,7 +2091,7 @@ class DirectHandler:
                     logger.warning(f"📸 Не вдалося знайти file input для фото {i+1}, зупиняємось на {staged}")
                     break
 
-                file_input.send_keys(abs_path)
+                file_input.type(abs_path)
                 staged += 1
                 logger.info(f"📸 Фото {staged}/{len(image_paths)} додано в альбом: {os.path.basename(abs_path)}")
 
@@ -2224,8 +2130,8 @@ class DirectHandler:
         import tempfile
         tmp_paths = []
         try:
-            cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
-            headers = {'User-Agent': self.driver.execute_script("return navigator.userAgent")}
+            cookies = {c['name']: c['value'] for c in self.driver.context.cookies()}
+            headers = {'User-Agent': self.driver.evaluate("() => navigator.userAgent")}
 
             for url in urls:
                 url = self._convert_gdrive_url(url)
@@ -2264,9 +2170,7 @@ class DirectHandler:
         """
         # Спосіб 1: a[aria-label] з повідомлень — найнадійніший (href="/qarbbon")
         try:
-            profile_links = self.driver.find_elements(
-                By.XPATH, "//a[starts-with(@aria-label, 'Open the profile page')]"
-            )
+            profile_links = self.driver.locator("xpath=//a[starts-with(@aria-label, 'Open the profile page')]").all()
             if profile_links:
                 href = profile_links[0].get_attribute('href') or ''
                 # Витягуємо username з href: "https://instagram.com/qarbbon" або "/qarbbon"
@@ -2279,7 +2183,7 @@ class DirectHandler:
 
         # Спосіб 2: span[@title] в хедері
         try:
-            title_span = self.driver.find_element(By.XPATH, "//header//span[@title]")
+            title_span = self.driver.locator("xpath=//header//span[@title]").first
             username = title_span.get_attribute('title')
             if username:
                 logger.info(f"Username (header title): {username}")
@@ -2289,9 +2193,9 @@ class DirectHandler:
 
         # Спосіб 3: перший span з текстом в header
         try:
-            header_spans = self.driver.find_elements(By.XPATH, "//header//span")
+            header_spans = self.driver.locator("xpath=//header//span").all()
             for span in header_spans:
-                text = span.text.strip()
+                text = span.inner_text().strip()
                 if text and len(text) > 1:
                     logger.info(f"Username (header span): {text}")
                     return text
@@ -2304,9 +2208,9 @@ class DirectHandler:
     def get_display_name(self) -> str:
         """Отримати display name (ім'я) з хедера чату."""
         try:
-            header_spans = self.driver.find_elements(By.XPATH, "//header//span")
+            header_spans = self.driver.locator("xpath=//header//span").all()
             for span in header_spans:
-                text = span.text.strip()
+                text = span.inner_text().strip()
                 if text and len(text) > 1:
                     return text
         except Exception:
@@ -2649,7 +2553,7 @@ class DirectHandler:
             # 17. Одразу виходимо з чату в Direct (не висимо в переписці)
             try:
                 logger.info(f"Виходимо з чату {username} → Direct")
-                self.driver.get('https://www.instagram.com/direct/')
+                self.driver.goto('https://www.instagram.com/direct/')
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f"Не вдалося перейти в Direct після відповіді: {e}")
@@ -2691,7 +2595,7 @@ class DirectHandler:
 
             # Знаходимо потрібний чат заново по username через span[@title]
             # (після навігації старі елементи стають stale)
-            target_spans = self.driver.find_elements(By.XPATH, f"//span[@title='{username}']")
+            target_spans = self.driver.locator(f"xpath=//span[@title='{username}']").all()
 
             if not target_spans:
                 logger.warning(f"Не знайдено span[@title='{username}'] на сторінці")
@@ -2702,14 +2606,10 @@ class DirectHandler:
                     # Піднімаємось до клікабельного батька
                     clickable = None
                     try:
-                        clickable = target_span.find_element(
-                            By.XPATH, "./ancestor::div[@role='button']"
-                        )
+                        clickable = target_span.locator("xpath=./ancestor::div[@role='button']").first
                     except Exception:
                         try:
-                            clickable = target_span.find_element(
-                                By.XPATH, "./ancestor::div[@role='listitem']"
-                            )
+                            clickable = target_span.locator("xpath=./ancestor::div[@role='listitem']").first
                         except Exception:
                             continue
 
