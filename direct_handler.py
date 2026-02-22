@@ -478,7 +478,7 @@ class DirectHandler:
                         continue
                     w = int(img.get_attribute('width') or '0')
                     h = int(img.get_attribute('height') or '0')
-                    if w < 100 or h < 100:
+                    if w < 50 or h < 50:
                         try:
                             natural = self.driver.execute_script(
                                 "return [arguments[0].naturalWidth, arguments[0].naturalHeight]", img
@@ -486,7 +486,7 @@ class DirectHandler:
                             w, h = natural[0], natural[1]
                         except Exception:
                             pass
-                    if w < 100 or h < 100:
+                    if w < 50 or h < 50:
                         continue
 
                     # Перевіряємо чи це відео (playButton.png поруч або t15.3394-10 в URL)
@@ -1116,7 +1116,7 @@ class DirectHandler:
                     for selector in ["img[style*='object-fit']", "div[role='dialog'] img", "img[crossorigin]"]:
                         try:
                             img_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            if img_element and img_element.size.get('width', 0) > 100:
+                            if img_element and img_element.size.get("width", 0) > 50:
                                 break
                         except Exception:
                             continue
@@ -1179,7 +1179,7 @@ class DirectHandler:
                         src = img.get_attribute('src') or ''
                         w = img.size.get('width', 0)
                         h = img.size.get('height', 0)
-                        if ('cdninstagram' in src or 'fbcdn' in src) and w > 100 and h > 100:
+                        if ('cdninstagram' in src or 'fbcdn' in src) and w > 50 and h > 50:
                             clickable = img
                             logger.info(f"📎 Знайдено превʼю поста для кліку: {w}x{h}")
                             break
@@ -1226,7 +1226,7 @@ class DirectHandler:
                             for img in imgs:
                                 w = img.size.get('width', 0)
                                 h = img.size.get('height', 0)
-                                if w * h > best_size and w > 100 and h > 100:
+                                if w * h > best_size and w > 50 and h > 50:
                                     best_size = w * h
                                     img_element = img
                         except Exception:
