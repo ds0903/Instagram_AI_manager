@@ -89,7 +89,7 @@ class AIAgent:
         Повертає list types.Content у форматі Gemini API.
         """
         # Отримуємо історію розмови з DB
-        history = self.db.get_conversation_history(username, limit=20)
+        history = self.db.get_conversation_history(username, limit=30)
 
         messages = []
         for msg in history:
