@@ -39,6 +39,9 @@ BASE_DIR = Path(__file__).parent
 SESSIONS_DIR = BASE_DIR / 'data' / 'sessions'
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Розмір вікна браузера
+VIEWPORT = {"width": 1400, "height": 900}
+
 # ==================== WATCHDOG (Heartbeat) ====================
 _watchdog_running = False
 _watchdog_thread = None
@@ -130,7 +133,12 @@ class InstagramBot:
             if headless is None:
                 headless = os.getenv('HEADLESS', 'false').lower() == 'true'
             logger.info(f"Запуск Camoufox (headless={headless})...")
-            self._camoufox = Camoufox(headless=headless, geoip=True, humanize=True)
+            self._camoufox = Camoufox(
+                headless=headless,
+                geoip=True,
+                humanize=True,
+                window=(VIEWPORT['width'], VIEWPORT['height']),
+            )
             self.browser = self._camoufox.__enter__()
 
             # Завантажуємо сесію якщо є
@@ -138,17 +146,18 @@ class InstagramBot:
             session_json = str(session_file).replace('.pkl', '.json')
 
             if os.path.exists(session_json):
-                self.context = self.browser.new_context(storage_state=session_json)
+                self.context = self.browser.new_context(storage_state=session_json, viewport=VIEWPORT)
                 logger.info(f"Camoufox: сесія завантажена з {session_json}")
             else:
-                self.context = self.browser.new_context()
+                self.context = self.browser.new_context(viewport=VIEWPORT)
 
             # Збільшуємо таймаут навігації до 90 секунд (Instagram повільний)
             self.context.set_default_navigation_timeout(90000)
             self.context.set_default_timeout(30000)
 
             self.page = self.context.new_page()
-            self.page.set_viewport_size({"width": 1400, "height": 900})
+            self.page.set_viewport_size(VIEWPORT)
+            self.page.evaluate(f"window.resizeTo({VIEWPORT['width']}, {VIEWPORT['height']}); window.moveTo(0, 0);")
             self.driver = self.page  # alias для сумісності
             logger.info("Camoufox запущено успішно")
 
