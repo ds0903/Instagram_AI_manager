@@ -381,17 +381,22 @@ class DirectHandler:
                 }
 
                 // === СТРАТЕГІЯ 2: X-позиція (fallback) ===
-                // В Instagram DM: повідомлення клієнта зліва, наші справа
+                // В Instagram DM: повідомлення клієнта зліва, наші справа.
+                // Використовуємо textbox як точний референс зони чату (без сайдбару).
                 var rect = msg.getBoundingClientRect();
-                var chatContainer = document.querySelector('div[role="grid"]')
-                                 || document.querySelector('main')
-                                 || document.documentElement;
-                var containerRect = chatContainer.getBoundingClientRect();
-                var containerCenter = containerRect.left + containerRect.width / 2;
                 var msgCenter = rect.left + rect.width / 2;
 
-                // Якщо центр повідомлення лівіше за центр контейнера → користувач
-                return msgCenter < containerCenter;
+                var textbox = document.querySelector('div[role="textbox"]');
+                var chatCenter;
+                if (textbox) {
+                    var tbRect = textbox.getBoundingClientRect();
+                    chatCenter = tbRect.left + tbRect.width / 2;
+                } else {
+                    // Fallback: viewport center
+                    chatCenter = window.innerWidth / 2;
+                }
+
+                return msgCenter < chatCenter;
             }""", self.bot_username)
         except Exception as e:
             logger.error(f"Помилка визначення відправника: {e}")
