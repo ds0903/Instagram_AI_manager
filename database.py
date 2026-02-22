@@ -232,13 +232,17 @@ class Database:
             return None
 
     def is_bot_message_in_db(self, username: str, text: str) -> bool:
-        """Перевірити чи є таке повідомлення бота (assistant) в БД для даного username."""
+        """Перевірити чи є таке повідомлення бота (assistant) в БД для даного username.
+        Перевіряємо substring-пошуком: Instagram може відображати один DB-запис як декілька bubble,
+        тому текст з екрану може бути лише частиною повного збереженого тексту."""
+        # Ескейпимо спецсимволи LIKE: % і _
+        escaped = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         with self.conn.cursor() as cur:
             cur.execute("""
                 SELECT id FROM conversations
-                WHERE username = %s AND role = 'assistant' AND content = %s
+                WHERE username = %s AND role = 'assistant' AND content LIKE %s ESCAPE '\\'
                 LIMIT 1
-            """, (username, text))
+            """, (username, f'%{escaped}%'))
             return cur.fetchone() is not None
 
     def get_last_user_message_id(self, username: str) -> int:
