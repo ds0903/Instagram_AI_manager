@@ -45,11 +45,25 @@ class DirectHandler:
         else:
             logger.warning("BOT_USERNAME не вказано в .env! Визначення ролей може бути неточним.")
 
+    def _dismiss_popups(self):
+        """Закрити Instagram попапи (сповіщення, cookies тощо) якщо є."""
+        try:
+            # "Не зараз" — попап сповіщень
+            btn = self.driver.locator("button._a9_1").first
+            if btn.is_visible():
+                btn.click()
+                logger.info("Закрито попап сповіщень (Не зараз)")
+                time.sleep(1)
+        except Exception:
+            pass
+
     def go_to_location(self, url: str) -> bool:
         """Перехід на конкретну сторінку Direct (inbox/requests/hidden)."""
         try:
             self.driver.goto(url)
             time.sleep(3)
+
+            self._dismiss_popups()
 
             # Чекаємо завантаження чатів — на inbox це role="listitem",
             # на requests/hidden це role="button" всередині списку
@@ -1894,7 +1908,7 @@ class DirectHandler:
                 return False
 
             abs_path = os.path.abspath(image_path)
-            file_input.type(abs_path)
+            file_input.set_input_files(abs_path)
             logger.info(f"Файл завантажено: {abs_path}")
 
             # Чекаємо поки з'явиться preview
@@ -2091,7 +2105,7 @@ class DirectHandler:
                     logger.warning(f"📸 Не вдалося знайти file input для фото {i+1}, зупиняємось на {staged}")
                     break
 
-                file_input.type(abs_path)
+                file_input.set_input_files(abs_path)
                 staged += 1
                 logger.info(f"📸 Фото {staged}/{len(image_paths)} додано в альбом: {os.path.basename(abs_path)}")
 
