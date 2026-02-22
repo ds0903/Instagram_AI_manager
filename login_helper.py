@@ -13,6 +13,41 @@ from pathlib import Path
 from dotenv import load_dotenv
 from camoufox.sync_api import Camoufox
 
+
+VPS_HOST = '185.235.219.33'
+VPS_USER = 'root'
+VPS_PASSWORD = '1aQG2sktXKA15p8'
+VPS_SESSION_DIR = '/root/Instagram_AI_manager/data/sessions'
+
+
+def upload_session_to_vps(local_path: str):
+    """Завантажити файл сесії на VPS через SFTP."""
+
+    try:
+        import paramiko
+        filename = os.path.basename(local_path)
+        remote_path = f"{VPS_SESSION_DIR}/{filename}"
+
+        print(f"\nПідключаюсь до VPS {VPS_HOST}...")
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(VPS_HOST, username=VPS_USER, password=VPS_PASSWORD, timeout=15)
+
+        sftp = ssh.open_sftp()
+        try:
+            sftp.mkdir(VPS_SESSION_DIR)
+        except Exception:
+            pass
+        sftp.put(local_path, remote_path)
+        sftp.close()
+        ssh.close()
+
+        print(f"✓ Сесію завантажено на VPS: {remote_path}")
+    except ImportError:
+        print("paramiko не встановлено. Запусти: pip install paramiko")
+    except Exception as e:
+        print(f"Помилка завантаження на VPS: {e}")
+
 load_dotenv()
 
 
@@ -79,6 +114,12 @@ def manual_login_instagram():
             context.storage_state(path=session_json)
 
             print(f"\n✓ Сесію збережено: {session_json}")
+
+            # Питаємо чи завантажувати на VPS
+            choice = input("\nЗавантажити сесію на VPS? (Enter = так, N = ні): ").strip().lower()
+            if choice != 'n':
+                upload_session_to_vps(session_json)
+
             print("\n" + "=" * 70)
             print("  ГОТОВО!")
             print("=" * 70)
