@@ -124,11 +124,13 @@ class InstagramBot:
         self.ai_agent = None
         self.direct_handler = None
 
-    def init_driver(self, headless=False):
+    def init_driver(self, headless=None):
         """Запуск Camoufox (Firefox антидетект) браузера."""
         try:
+            if headless is None:
+                headless = os.getenv('HEADLESS', 'false').lower() == 'true'
             logger.info(f"Запуск Camoufox (headless={headless})...")
-            self._camoufox = Camoufox(headless=headless, geoip=True)
+            self._camoufox = Camoufox(headless=headless, geoip=True, humanize=True)
             self.browser = self._camoufox.__enter__()
 
             # Завантажуємо сесію якщо є
@@ -141,8 +143,12 @@ class InstagramBot:
             else:
                 self.context = self.browser.new_context()
 
+            # Збільшуємо таймаут навігації до 90 секунд (Instagram повільний)
+            self.context.set_default_navigation_timeout(90000)
+            self.context.set_default_timeout(30000)
+
             self.page = self.context.new_page()
-            self.page.set_viewport_size({"width": 1920, "height": 1080})
+            self.page.set_viewport_size({"width": 1400, "height": 900})
             self.driver = self.page  # alias для сумісності
             logger.info("Camoufox запущено успішно")
 
@@ -187,7 +193,7 @@ class InstagramBot:
 
         # Якщо JSON сесія вже завантажена в init_driver — просто перевіряємо логін
         if os.path.exists(session_json):
-            self.page.goto('https://www.instagram.com')
+            self.page.goto('https://www.instagram.com', wait_until='domcontentloaded')
             time.sleep(3)
             if self.is_logged_in():
                 logger.info(f"Сесія завантажена: {session_json}")
@@ -199,7 +205,7 @@ class InstagramBot:
                 with open(session_file, 'rb') as f:
                     cookies = pickle.load(f)
 
-                self.page.goto('https://www.instagram.com')
+                self.page.goto('https://www.instagram.com', wait_until='domcontentloaded')
                 time.sleep(2)
 
                 for cookie in cookies:
@@ -213,7 +219,7 @@ class InstagramBot:
                     except Exception as e:
                         logger.debug(f"Помилка cookie: {e}")
 
-                self.page.reload()
+                self.page.reload(wait_until='domcontentloaded')
                 time.sleep(3)
 
                 if self.is_logged_in():
