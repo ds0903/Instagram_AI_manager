@@ -56,8 +56,8 @@ def manual_login_instagram():
 
     try:
         headless = os.getenv('HEADLESS', 'false').lower() == 'true'
-        with Camoufox(headless=headless, geoip=True, humanize=True) as browser:
-            context = browser.new_context()
+        with Camoufox(headless=headless, geoip=True, humanize=True, window=(1400, 900)) as browser:
+            context = browser.new_context(viewport={"width": 1400, "height": 900})
             context.set_default_navigation_timeout(90000)
             page = context.new_page()
             page.set_viewport_size({"width": 1400, "height": 900})

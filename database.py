@@ -217,6 +217,20 @@ class Database:
             # Повертаємо в хронологічному порядку
             return list(reversed(messages))
 
+    def get_user_display_name(self, username: str) -> str:
+        """Отримати збережений display_name для username з БД (останній непорожній)."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    SELECT display_name FROM conversations
+                    WHERE username = %s AND display_name IS NOT NULL AND display_name != ''
+                    ORDER BY created_at DESC LIMIT 1
+                """, (username,))
+                row = cur.fetchone()
+                return row[0] if row else None
+        except Exception:
+            return None
+
     def is_bot_message_in_db(self, username: str, text: str) -> bool:
         """Перевірити чи є таке повідомлення бота (assistant) в БД для даного username."""
         with self.conn.cursor() as cur:

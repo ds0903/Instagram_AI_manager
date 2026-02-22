@@ -85,83 +85,67 @@ class DirectHandler:
         """Перехід в Direct inbox (зворотна сумісність)."""
         return self.go_to_location('https://www.instagram.com/direct/inbox/')
 
-    # def get_unread_chats(self) -> list:
-    #     """
-    #     Отримати непрочитані чати на поточній сторінці.
-    #     Стратегія: шукаємо ЗНИЗУ ВГОРУ — спочатку знаходимо span[data-visualcompletion="ignore"]
-    #     з текстом "Unread", потім піднімаємось до батьківського клікабельного елемента.
-    #
-    #     На inbox: контейнер = div[@role='listitem']
-    #     На requests/hidden: контейнер = div[@role='button']
-    #     """
-    #     chats = []
-    #     try:
-    #         unread_indicators = self.driver.find_elements(
-    #             By.XPATH, "//span[@data-visualcompletion='ignore']"
-    #         )
-    #         logger.info(f"Знайдено {len(unread_indicators)} span[data-visualcompletion='ignore']")
-    #
-    #         for indicator in unread_indicators:
-    #             try:
-    #                 inner_text = indicator.inner_text().strip()
-    #                 if 'unread' not in inner_text.lower():
-    #                     continue
-    #
-    #                 clickable = None
-    #                 try:
-    #                     clickable = indicator.find_element(
-    #                         By.XPATH, "./ancestor::div[@role='button']"
-    #                     )
-    #                 except Exception:
-    #                     pass
-    #                 if clickable is None:
-    #                     try:
-    #                         clickable = indicator.find_element(
-    #                             By.XPATH, "./ancestor::div[@role='listitem']"
-    #                         )
-    #                     except Exception:
-    #                         pass
-    #                 if clickable is None:
-    #                     continue
-    #
-    #                 username = "unknown"
-    #                 try:
-    #                     title_span = clickable.locator("xpath=.//span[@title]").first
-    #                     username = title_span.get_attribute('title')
-    #                 except Exception:
-    #                     try:
-    #                         spans = clickable.locator("xpath=.//span").all()
-    #                         for span in spans:
-    #                             text = span.inner_text().strip()
-    #                             if text and text.lower() != 'unread' and len(text) > 1:
-    #                                 username = text
-    #                                 break
-    #                     except Exception:
-    #                         pass
-    #
-    #                 href = None
-    #                 try:
-    #                     link = clickable.locator("xpath=.//a[contains(@href, '/direct/').first]")
-    #                     href = link.get_attribute('href')
-    #                 except Exception:
-    #                     pass
-    #
-    #                 chats.append({
-    #                     'username': username,
-    #                     'href': href,
-    #                     'element': clickable,
-    #                     'unread': True
-    #                 })
-    #                 logger.info(f"  Непрочитаний чат: {username}")
-    #
-    #             except Exception:
-    #                 continue
-    #
-    #         logger.info(f"Знайдено {len(chats)} непрочитаних чатів")
-    #         return chats
-    #     except Exception as e:
-    #         logger.error(f"Помилка отримання чатів: {e}")
-    #         return []
+    def get_unread_chats(self) -> list:
+        """
+        Отримати непрочитані чати на поточній сторінці.
+        Шукаємо span[data-visualcompletion='ignore'] з текстом 'Unread',
+        піднімаємось до батьківського клікабельного елемента.
+        """
+        chats = []
+        try:
+            unread_indicators = self.driver.locator(
+                "xpath=//span[@data-visualcompletion='ignore']"
+            ).all()
+            logger.info(f"Знайдено {len(unread_indicators)} span[data-visualcompletion='ignore']")
+
+            for indicator in unread_indicators:
+                try:
+                    inner_text = indicator.inner_text().strip()
+                    if 'unread' not in inner_text.lower():
+                        continue
+
+                    clickable = None
+                    for role in ('button', 'listitem'):
+                        loc = indicator.locator(f"xpath=./ancestor::div[@role='{role}']")
+                        if loc.count() > 0:
+                            clickable = loc.first
+                            break
+
+                    if clickable is None:
+                        continue
+
+                    username = "unknown"
+                    title_loc = clickable.locator("xpath=.//span[@title]")
+                    if title_loc.count() > 0:
+                        username = title_loc.first.get_attribute('title') or "unknown"
+                    else:
+                        for span in clickable.locator("xpath=.//span").all():
+                            text = span.inner_text().strip()
+                            if text and text.lower() != 'unread' and len(text) > 1:
+                                username = text
+                                break
+
+                    href = None
+                    link_loc = clickable.locator("xpath=.//a[contains(@href, '/direct/')]")
+                    if link_loc.count() > 0:
+                        href = link_loc.first.get_attribute('href')
+
+                    chats.append({
+                        'username': username,
+                        'href': href,
+                        'element': clickable,
+                        'unread': True
+                    })
+                    logger.info(f"  Непрочитаний чат: {username}")
+
+                except Exception:
+                    continue
+
+            logger.info(f"Знайдено {len(chats)} непрочитаних чатів")
+            return chats
+        except Exception as e:
+            logger.error(f"Помилка отримання чатів: {e}")
+            return []
 
     def get_all_chats(self) -> list:
         """
@@ -274,10 +258,7 @@ class DirectHandler:
                 logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                 continue
 
-            # [DEBUG] Використовуємо get_all_chats() — всі чати, не тільки непрочитані
-            # Коли дебаг закінчиться — замінити на get_unread_chats()
-            found_chats = self.get_all_chats()
-            # found_chats = self.get_unread_chats()  # TODO: розкоментувати після дебагу
+            found_chats = self.get_unread_chats()
 
             if found_chats:
                 logger.info(f"  {name}: знайдено {len(found_chats)} чатів")
@@ -2220,13 +2201,13 @@ class DirectHandler:
         return "unknown_user"
 
     def get_display_name(self) -> str:
-        """Отримати display name (ім'я) з хедера чату."""
+        """Отримати display name (ім'я) з хедера чату — h2 span[title]."""
         try:
-            header_spans = self.driver.locator("xpath=//header//span").all()
-            for span in header_spans:
-                text = span.inner_text().strip()
-                if text and len(text) > 1:
-                    return text
+            loc = self.driver.locator("xpath=//header//h2//span[@title]")
+            if loc.count() > 0:
+                name = loc.first.get_attribute('title')
+                if name:
+                    return name
         except Exception:
             pass
         return None
@@ -2245,6 +2226,14 @@ class DirectHandler:
         8. Hover + Reply + відправка
         """
         try:
+            # Якщо display_name не передано — шукаємо в БД, потім з хедера чату
+            if not display_name:
+                display_name = self.ai_agent.db.get_user_display_name(username)
+            if not display_name:
+                display_name = self.get_display_name()
+                if display_name:
+                    logger.info(f"Display name отримано з хедера: {display_name}")
+
             logger.info(f"Обробка чату: {username} ({display_name})")
 
             # 1. Читаємо ВСІ повідомлення користувача з екрану
@@ -2712,9 +2701,7 @@ class DirectHandler:
                         continue
 
                     # Знаходимо чати на цій сторінці
-                    # [DEBUG] get_all_chats() — всі чати
-                    found_chats = self.get_all_chats()
-                    # found_chats = self.get_unread_chats()  # TODO: розкоментувати після дебагу
+                    found_chats = self.get_unread_chats()
 
                     if not found_chats:
                         logger.info(f"  {name}: чатів не знайдено")
