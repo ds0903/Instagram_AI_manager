@@ -26,7 +26,7 @@ class DirectHandler:
     ]
 
     # [DEBUG] Фільтр — відповідаємо тільки цьому username (None = всім)
-    DEBUG_ONLY_USERNAME = "Danyl"  # TODO: прибрати після дебагу (поставити None)
+    DEBUG_ONLY_USERNAME = None
 
     # [DEBUG] Зберігати скріншоти сторіз локально для перевірки
     DEBUG_SAVE_STORY_SCREENSHOTS = True
