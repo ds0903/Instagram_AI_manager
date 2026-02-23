@@ -200,6 +200,21 @@ class TelegramNotifier:
 """
         return self.send_message(text)
 
+    def notify_manager_chat_new_message(self, username: str, display_name: str,
+                                        last_message: str, count: int = 1) -> bool:
+        text = f"""👤 <b>Нове повідомлення від клієнта</b>
+
+⚠️ <b>Увага:</b> У цьому чаті раніше писав менеджер вручну — бот не відповідає автоматично.
+
+👤 <b>Клієнт:</b> @{username}
+📛 <b>Ім'я:</b> {display_name or 'Невідомо'}
+📩 <b>Нових повідомлень:</b> {count}
+
+💬 <b>Останнє повідомлення:</b>
+<i>{last_message[:500]}</i>
+"""
+        return self.send_message(text)
+
     def notify_unusual_question(self, username: str, question: str) -> bool:
         text = f"""❓ <b>Нестандартне питання</b>
 

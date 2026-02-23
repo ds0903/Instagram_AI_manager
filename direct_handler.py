@@ -1828,7 +1828,7 @@ class DirectHandler:
                     logger.info(f"Toolbar пошук: {e}")
 
             if reply_btn:
-                reply_btn.click()
+                reply_btn.click(timeout=15000)
                 time.sleep(1)
                 logger.info("Кнопку Reply натиснуто!")
                 return True
@@ -2251,6 +2251,16 @@ class DirectHandler:
             last_bot_text = getattr(self, '_last_assistant_text', None)
             if last_bot_text:
                 if not self.ai_agent.db.is_bot_message_in_db(username, last_bot_text):
+                    # Перевіряємо чи є нові (невідповіджені) повідомлення від клієнта
+                    unanswered_check = self._filter_unanswered(user_messages, username)
+                    if unanswered_check and getattr(self.ai_agent, 'telegram', None):
+                        last_msg = unanswered_check[-1]['content']
+                        self.ai_agent.telegram.notify_manager_chat_new_message(
+                            username=username,
+                            display_name=display_name,
+                            last_message=last_msg,
+                            count=len(unanswered_check)
+                        )
                     logger.info(
                         f"⚠️ [{username}] Останнє повідомлення бота не в БД — "
                         f"менеджер писав вручну. Пропускаємо."

@@ -137,6 +137,7 @@ class InstagramBot:
                 headless=headless,
                 geoip=True,
                 humanize=True,
+                locale='en-US',
                 window=(VIEWPORT['width'], VIEWPORT['height']),
             )
             self.browser = self._camoufox.__enter__()
