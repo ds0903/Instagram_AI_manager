@@ -2472,11 +2472,12 @@ class DirectHandler:
             # 10.3. Парсимо маркер [SAVE_QUESTION:...] — AI вирішила що це нове питання
             import re as _re
             save_q_match = _re.search(r'\[SAVE_QUESTION:(.*?)\]', response)
-            if save_q_match and self.ai_agent.sheets_manager:
-                question_text = save_q_match.group(1).strip()
-                if question_text:
-                    self.ai_agent.sheets_manager.save_unanswered_question(question_text, username)
-                # Видаляємо маркер з тексту — клієнт не бачить
+            if save_q_match:
+                if self.ai_agent.sheets_manager:
+                    question_text = save_q_match.group(1).strip()
+                    if question_text:
+                        self.ai_agent.sheets_manager.save_unanswered_question(question_text, username)
+                # Видаляємо маркер з тексту — клієнт не бачить (завжди, незалежно від sheets_manager)
                 response = _re.sub(r'\[SAVE_QUESTION:.*?\]', '', response).strip()
 
             # 10.5. Парсимо фото маркери
@@ -2510,9 +2511,9 @@ class DirectHandler:
                 )
 
             # 14. Hover + Reply на останнє повідомлення користувача
-            msg_element = self._last_user_message_element
-            if msg_element:
-                self.hover_and_click_reply(msg_element, chat_username=username)
+            # msg_element = self._last_user_message_element
+            # if msg_element:
+            #     self.hover_and_click_reply(msg_element, chat_username=username)
 
             # 15. Відправляємо текстову відповідь
             # Якщо є \n\n — це розділювач між блоками (опис + питання)
