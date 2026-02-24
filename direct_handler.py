@@ -2716,8 +2716,16 @@ class DirectHandler:
                         logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                         continue
 
-                    # Знаходимо чати на цій сторінці
+                    # Знаходимо чати на цій сторінці (до 3 спроб якщо 0 чатів)
                     found_chats = self.get_unread_chats()
+                    if not found_chats:
+                        for _retry in range(2):
+                            logger.info(f"  {name}: 0 чатів, перезавантажую ({_retry + 1}/2)...")
+                            self.driver.goto(url, wait_until='domcontentloaded')
+                            time.sleep(3)
+                            found_chats = self.get_unread_chats()
+                            if found_chats:
+                                break
 
                     if not found_chats:
                         logger.info(f"  {name}: чатів не знайдено")
