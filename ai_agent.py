@@ -48,7 +48,10 @@ class AIAgent:
             from google_sheets import GoogleSheetsManager
             self.sheets_manager = GoogleSheetsManager()
             if self.sheets_manager.connect():
-                logger.info("Google Sheets підключено")
+                products = self.sheets_manager.get_products()
+                templates = self.sheets_manager.get_templates()
+                rules = self.sheets_manager.get_behavior_rules()
+                logger.info(f"Google Sheets підключено: {len(products)} товарів, {len(templates)} шаблонів, {len(rules)} правил")
             else:
                 logger.warning("Google Sheets не підключено - буде використано локальні дані")
                 self.sheets_manager = None
