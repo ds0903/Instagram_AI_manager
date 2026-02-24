@@ -1901,6 +1901,9 @@ class DirectHandler:
             time.sleep(2)
 
             send_clicked = self._click_send_button()
+            if not send_clicked:
+                logger.info("Кнопка Send не знайдена — натискаємо Enter")
+                self.driver.keyboard.press("Enter")
             time.sleep(2)
             logger.info(f"Фото відправлено: {image_path}")
             return True
@@ -2105,12 +2108,12 @@ class DirectHandler:
             # Всі фото в staging — один Send
             time.sleep(1)
             send_clicked = self._click_send_button()
+            if not send_clicked:
+                logger.info("📸 Кнопка Send не знайдена — натискаємо Enter")
+                self.driver.keyboard.press("Enter")
             time.sleep(2)
 
-            if send_clicked:
-                logger.info(f"📸 Альбом відправлено ({staged} фото)")
-            else:
-                logger.info(f"📸 Кнопка Send не знайдена, фото могло відправитись автоматично ({staged} фото)")
+            logger.info(f"📸 Альбом відправлено ({staged} фото)")
             return True
 
         except Exception as e:
