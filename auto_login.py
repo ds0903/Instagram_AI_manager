@@ -83,12 +83,12 @@ def auto_relogin(session_file_path: str, username: str, password: str) -> bool:
             if not username_input:
                 logger.error("Auto-login: поле username не знайдено")
                 return False
-            username_input.click()
+            username_input.focus()
             for char in username:
                 username_input.type(char)
-                time.sleep(random.uniform(0.05, 0.18))
+                time.sleep(random.uniform(0.07, 0.20))
             logger.info(f"Auto-login: введено username={username}")
-            time.sleep(random.uniform(0.4, 0.8))
+            time.sleep(random.uniform(0.4, 0.9))
 
             # Поле password (name="pass" — саме так Instagram називає поле пароля)
             # Fallback: type="password" у формі login_form
@@ -100,32 +100,60 @@ def auto_relogin(session_file_path: str, username: str, password: str) -> bool:
             if not password_input:
                 logger.error("Auto-login: поле password не знайдено")
                 return False
-            # Клікаємо зліва (position x=20) — щоб не потрапити на іконку "ока" справа
-            password_input.click(position={'x': 20, 'y': 10})
+            # focus() замість click() — щоб не потрапити на іконку "ока" справа
+            password_input.focus()
+            typed_pwd = ''
             for char in password:
                 password_input.type(char)
-                time.sleep(random.uniform(0.05, 0.18))
-            time.sleep(random.uniform(0.4, 0.8))
+                typed_pwd += char
+                time.sleep(random.uniform(0.07, 0.20))
+            logger.info(f"Auto-login: введено password ({len(typed_pwd)} символів)")
+            time.sleep(random.uniform(0.4, 0.9))
 
-            # Кнопка Log in (aria-label="Log In" або submit)
-            login_btn = (
-                page.query_selector('[aria-label="Log In"]') or
-                page.query_selector('button[type="submit"]') or
-                page.query_selector('#login_form [role="button"]')
+            # Натискаємо іконку "ока" щоб показати пароль — перевірка що введено вірно
+            eye_btn = (
+                page.query_selector('[aria-label="Show password"]') or
+                page.query_selector('[aria-label="Show"]') or
+                page.query_selector('svg[aria-label="Show password"]') or
+                page.query_selector("xpath=//button[.//*[local-name()='svg']][ancestor::form]")
             )
-            if login_btn:
-                login_btn.click()
-                logger.info("Auto-login: натиснуто кнопку Log in")
-            else:
-                password_input.press('Enter')
-                logger.info("Auto-login: натиснуто Enter (кнопку не знайдено)")
+            if eye_btn:
+                eye_btn.click()
+                logger.info("Auto-login: натиснуто 'показати пароль' (перевірка)")
+                time.sleep(1.5)
 
-            # Чекаємо поки сторінка повністю завантажиться після Log in
-            logger.info("Auto-login: очікую завантаження після Log in...")
-            try:
-                page.wait_for_load_state('networkidle', timeout=30000)
-            except Exception:
-                pass  # якщо timeout — продовжуємо далі
+            # Кнопка Log in — до 3 спроб поки не перекине зі сторінки логіну
+            logged_in = False
+            for login_attempt in range(1, 4):
+                # Шукаємо по тексту "Log in" — щоб не зачепити кнопку ока
+                login_btn = (
+                    page.query_selector("xpath=//button[normalize-space(.)='Log in']") or
+                    page.query_selector("xpath=//button[normalize-space(.)='Log In']") or
+                    page.query_selector('[aria-label="Log In"]') or
+                    page.query_selector('#login_form button[type="submit"]')
+                )
+                if login_btn:
+                    login_btn.click()
+                    logger.info(f"Auto-login: натиснуто Log in (спроба {login_attempt}/3)")
+                else:
+                    password_input.press('Enter')
+                    logger.info(f"Auto-login: натиснуто Enter (спроба {login_attempt}/3, кнопку не знайдено)")
+
+                # Чекаємо поки сторінка перейде — поллінг кожну секунду до 30с
+                logger.info("Auto-login: чекаю переходу зі сторінки логіну...")
+                for _ in range(30):
+                    time.sleep(1)
+                    current = page.url
+                    if 'accounts/login' not in current and '/login' not in current:
+                        logged_in = True
+                        logger.info(f"Auto-login: увійшли успішно на спробі {login_attempt}, URL={current}")
+                        break
+                if logged_in:
+                    break
+
+                if login_attempt < 3:
+                    logger.warning(f"Auto-login: все ще на логін-сторінці після 30с, повторюю спробу {login_attempt + 1}/3...")
+                    time.sleep(random.uniform(2, 4))
 
             # Натискаємо "Save info" якщо з'явився діалог
             save_btn = (
