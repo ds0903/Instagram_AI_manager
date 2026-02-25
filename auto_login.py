@@ -18,24 +18,14 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 SESSIONS_DIR = BASE_DIR / 'data' / 'sessions'
 
-# Набори рандомних параметрів браузера
-_WINDOW_PRESETS = [
-    (1366, 768), (1440, 900), (1536, 864),
-    (1600, 900), (1920, 1080), (1280, 800),
-    (1280, 720), (1360, 768), (1400, 900),
-]
-_LOCALE_PRESETS = [
-    'en-US', 'en-GB', 'en-AU', 'en-CA',
-]
+VIEWPORT = {'width': 1400, 'height': 900}
+
+_LOCALE_PRESETS = ['en-US', 'en-GB', 'en-AU', 'en-CA']
+
 def _random_browser_params() -> dict:
-    """Повертає рандомні параметри браузера для кожного запуску."""
-    w, h = random.choice(_WINDOW_PRESETS)
-    # Невеликий jitter ±10px щоб розмір не збігався з шаблоном
-    w += random.randint(-10, 10)
-    h += random.randint(-5, 5)
     return {
-        'window': (w, h),
-        'viewport': {'width': w, 'height': h},
+        'window': (VIEWPORT['width'], VIEWPORT['height']),
+        'viewport': VIEWPORT,
         'locale': random.choice(_LOCALE_PRESETS),
     }
 
@@ -125,38 +115,52 @@ def auto_relogin(session_file_path: str, username: str, password: str) -> bool:
             # Кнопка Log in — до 3 спроб поки не перекине зі сторінки логіну
             logged_in = False
             for login_attempt in range(1, 4):
-                # Шукаємо по тексту "Log in" — щоб не зачепити кнопку ока
+                # Log in — div[role="button"] з aria-label="Log in" (маленька i!)
                 login_btn = (
-                    page.query_selector("xpath=//button[normalize-space(.)='Log in']") or
-                    page.query_selector("xpath=//button[normalize-space(.)='Log In']") or
+                    page.query_selector('[aria-label="Log in"]') or
                     page.query_selector('[aria-label="Log In"]') or
-                    page.query_selector('#login_form button[type="submit"]')
+                    page.query_selector("xpath=//div[@role='button'][.//span[text()='Log in']]") or
+                    page.query_selector("xpath=//button[normalize-space(.)='Log in']") or
+                    page.query_selector('button[type="submit"]')
                 )
                 if login_btn:
                     login_btn.click()
                     logger.info(f"Auto-login: натиснуто Log in (спроба {login_attempt}/3)")
                 else:
-                    password_input.press('Enter')
+                    page.keyboard.press('Enter')  # keyboard замість stale element
                     logger.info(f"Auto-login: натиснуто Enter (спроба {login_attempt}/3, кнопку не знайдено)")
 
-                # Чекаємо поки сторінка перейде — поллінг кожну секунду до 30с
-                logger.info("Auto-login: чекаю переходу зі сторінки логіну...")
-                for _ in range(30):
+                # Чекаємо 10с поки щось зміниться: URL або "Save info" діалог
+                logger.info("Auto-login: чекаю відповіді Instagram (до 15с)...")
+                for _ in range(15):
                     time.sleep(1)
                     current = page.url
+                    # Успіх 1: URL змінився (перейшли далі)
                     if 'accounts/login' not in current and '/login' not in current:
                         logged_in = True
-                        logger.info(f"Auto-login: увійшли успішно на спробі {login_attempt}, URL={current}")
+                        logger.info(f"Auto-login: URL змінився → {current}")
                         break
+                    # Успіх 2: з'явився діалог "Save your login info?" (URL ще accounts/login)
+                    save_dialog = (
+                        page.query_selector("xpath=//button[normalize-space(.)='Save info']") or
+                        page.query_selector("xpath=//div[normalize-space(.)='Not now']")
+                    )
+                    if save_dialog:
+                        logged_in = True
+                        logger.info("Auto-login: з'явився діалог 'Save info' — вхід успішний!")
+                        break
+
                 if logged_in:
                     break
 
                 if login_attempt < 3:
-                    logger.warning(f"Auto-login: все ще на логін-сторінці після 30с, повторюю спробу {login_attempt + 1}/3...")
+                    logger.warning(f"Auto-login: немає реакції після 10с, повторюю спробу {login_attempt + 1}/3...")
                     time.sleep(random.uniform(2, 4))
 
             # Натискаємо "Save info" якщо з'явився діалог
+            time.sleep(1)
             save_btn = (
+                page.query_selector("xpath=//button[normalize-space(.)='Save info']") or
                 page.query_selector("xpath=//button[@type='button'][text()='Save info']") or
                 page.query_selector("xpath=//button[@type='button'][.//span[text()='Save info']]")
             )
@@ -166,15 +170,28 @@ def auto_relogin(session_file_path: str, username: str, password: str) -> bool:
                 time.sleep(3)
             else:
                 # Або "Not now"
-                not_now = page.query_selector("xpath=//div[@role='button'][contains(.,'Not now')]")
+                not_now = page.query_selector("xpath=//div[normalize-space(.)='Not now']")
                 if not_now:
                     not_now.click()
                     logger.info("Auto-login: натиснуто 'Not now'")
                     time.sleep(2)
 
+            # Чекаємо поки Instagram сам завершить редирект після Save info / Not now
+            logger.info("Auto-login: чекаю автоматичного редиректу Instagram...")
+            for _ in range(15):
+                time.sleep(1)
+                if 'accounts' not in page.url and 'login' not in page.url:
+                    break
+
             # Переходимо на inbox і перевіряємо чи сесія жива
             logger.info("Auto-login: переходжу на inbox для перевірки сесії...")
-            page.goto('https://www.instagram.com/direct/inbox/', wait_until='networkidle')
+            try:
+                page.goto('https://www.instagram.com/direct/inbox/', wait_until='domcontentloaded', timeout=30000)
+            except Exception:
+                # Якщо навігація перервана іншим редиректом — чекаємо і пробуємо ще раз
+                time.sleep(3)
+                page.goto('https://www.instagram.com/direct/inbox/', wait_until='domcontentloaded', timeout=30000)
+            time.sleep(2)
 
             current_url = page.url
             if 'login' in current_url or 'accounts' in current_url:
