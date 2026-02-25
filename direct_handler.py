@@ -2614,6 +2614,9 @@ class DirectHandler:
 
                 response = self.ai_agent._strip_lead_ready_block(response)
 
+            # Завжди стрипаємо [LEAD_READY] навіть якщо парсинг не спрацював — клієнт не повинен бачити маркери
+            response = self.ai_agent._strip_lead_ready_block(response)
+
             # 10.2. Парсимо [CONTACT_CHANGE:...] — клієнт хоче змінити контактні дані
             contact_change_desc = self.ai_agent._parse_contact_change(response)
             if contact_change_desc:
@@ -2625,6 +2628,8 @@ class DirectHandler:
                     )
                 logger.info(f"Запит на зміну даних від {username}: {contact_change_desc[:60]}")
                 response = self.ai_agent._strip_contact_change(response)
+            # Завжди стрипаємо [CONTACT_CHANGE] теж
+            response = self.ai_agent._strip_contact_change(response)
 
             # 10.3. Парсимо маркер [SAVE_QUESTION:...] — AI вирішила що це нове питання
             save_q_match = _re.search(r'\[SAVE_QUESTION:(.*?)\]', response)
