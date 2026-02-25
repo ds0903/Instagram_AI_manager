@@ -1945,31 +1945,38 @@ class DirectHandler:
             True якщо фото відправлено
         """
         try:
-            # Конвертуємо Google Drive посилання в пряме
-            image_url = self._convert_gdrive_url(image_url)
+            import tempfile
+            image_data = None
 
-            # Завантажуємо зображення
-            cookies = {c['name']: c['value'] for c in self.driver.context.cookies()}
-            headers = {'User-Agent': self.driver.evaluate("() => navigator.userAgent")}
-            resp = requests.get(image_url, cookies=cookies, headers=headers, timeout=15)
+            # Якщо це Google Drive посилання — завантажуємо через API (надійно)
+            if 'drive.google.com' in image_url and self.ai_agent.sheets_manager:
+                image_data = self.ai_agent.sheets_manager.download_drive_file(image_url)
+                if not image_data:
+                    logger.warning("Drive API не зміг завантажити, пробую через HTTP...")
 
-            if resp.status_code != 200 or len(resp.content) < 1000:
-                logger.warning(f"Не вдалося завантажити фото з URL: {resp.status_code}")
-                return False
+            # Fallback: звичайний HTTP запит
+            if not image_data:
+                image_url = self._convert_gdrive_url(image_url)
+                cookies = {c['name']: c['value'] for c in self.driver.context.cookies()}
+                headers = {'User-Agent': self.driver.evaluate("() => navigator.userAgent")}
+                resp = requests.get(image_url, cookies=cookies, headers=headers, timeout=15)
+                if resp.status_code != 200 or len(resp.content) < 1000:
+                    logger.warning(f"Не вдалося завантажити фото з URL: {resp.status_code}")
+                    return False
+                image_data = resp.content
 
             # Визначаємо розширення
             ext = '.jpg'
-            if resp.content[:4] == b'\x89PNG':
+            if image_data[:4] == b'\x89PNG':
                 ext = '.png'
 
             # Зберігаємо тимчасово
-            import tempfile
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix='ig_photo_')
-            tmp.write(resp.content)
+            tmp.write(image_data)
             tmp_path = tmp.name
             tmp.close()
 
-            logger.info(f"Фото завантажено з URL: {len(resp.content)} байт → {tmp_path}")
+            logger.info(f"Фото завантажено: {len(image_data)} байт → {tmp_path}")
 
             # Відправляємо через send_photo
             result = self.send_photo(tmp_path)

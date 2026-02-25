@@ -9,6 +9,10 @@ Google Sheets Manager - База знань для Instagram AI Agent
 """
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+import re
 import logging
 import os
 from pathlib import Path
@@ -33,6 +37,7 @@ class GoogleSheetsManager:
         self.spreadsheet_url = spreadsheet_url or self._build_url()
         self.client = None
         self.spreadsheet = None
+        self.drive_service = None
 
     def _build_url(self) -> str:
         """Побудувати URL з ID таблиці"""
@@ -56,12 +61,115 @@ class GoogleSheetsManager:
             self.client = gspread.authorize(creds)
             self.spreadsheet = self.client.open_by_url(self.spreadsheet_url)
 
+            # Drive API — ті самі credentials
+            self.drive_service = build('drive', 'v3', credentials=creds)
+
             logger.info("Підключено до Google Sheets")
             return True
 
         except Exception as e:
             logger.error(f"Помилка підключення до Google Sheets: {e}")
             return False
+
+    # ==================== GOOGLE DRIVE ====================
+
+    @staticmethod
+    def extract_drive_file_id(url: str) -> str:
+        """Витягти File ID з будь-якого формату Google Drive посилання (файл)."""
+        patterns = [
+            r'drive\.google\.com/file/d/([a-zA-Z0-9_-]+)',
+            r'drive\.google\.com/(?:open|uc)\?(?:.*&)?id=([a-zA-Z0-9_-]+)',
+            r'id=([a-zA-Z0-9_-]+)',
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, url)
+            if m:
+                return m.group(1)
+        return None
+
+    @staticmethod
+    def extract_drive_folder_id(url: str) -> str:
+        """Витягти Folder ID з Google Drive посилання на папку."""
+        m = re.search(r'drive\.google\.com/drive/folders/([a-zA-Z0-9_-]+)', url)
+        if m:
+            return m.group(1)
+        return None
+
+    @staticmethod
+    def is_drive_folder_url(url: str) -> bool:
+        """Перевірити чи є URL посиланням на папку Google Drive."""
+        return 'drive.google.com/drive/folders/' in url
+
+    def list_folder_files(self, folder_id: str, path_prefix: str = '') -> list:
+        """
+        Рекурсивно отримати всі файли з папки Google Drive.
+
+        Returns:
+            list: [{name, id, path, url}]
+                  path — шлях з урахуванням підпапок (напр. "Розмірна сітка/Дівчинка.jpg")
+                  url  — https://drive.google.com/uc?id=FILE_ID (для використання в [PHOTO:])
+        """
+        if not self.drive_service:
+            return []
+        try:
+            results = self.drive_service.files().list(
+                q=f"'{folder_id}' in parents and trashed=false",
+                fields="files(id, name, mimeType)",
+                orderBy="name"
+            ).execute()
+            files = results.get('files', [])
+            output = []
+            for f in files:
+                full_path = f"{path_prefix}/{f['name']}" if path_prefix else f['name']
+                if f['mimeType'] == 'application/vnd.google-apps.folder':
+                    # Рекурсія в підпапку
+                    sub = self.list_folder_files(f['id'], path_prefix=full_path)
+                    output.extend(sub)
+                else:
+                    output.append({
+                        'name': f['name'],
+                        'id': f['id'],
+                        'path': full_path,
+                        'url': f"https://drive.google.com/uc?id={f['id']}"
+                    })
+            return output
+        except Exception as e:
+            logger.error(f"Помилка listування папки {folder_id}: {e}")
+            return []
+
+    def download_drive_file(self, url: str) -> bytes:
+        """
+        Завантажити файл з Google Drive через API (не публічне посилання).
+        Працює для будь-якого файлу до якого є доступ у сервісного акаунту.
+
+        Args:
+            url: Будь-яке Google Drive посилання (sharing link, uc?id=, тощо)
+
+        Returns:
+            bytes: Вміст файлу або None при помилці
+        """
+        if not self.drive_service:
+            logger.warning("Drive API не підключено")
+            return None
+
+        file_id = self.extract_drive_file_id(url)
+        if not file_id:
+            logger.warning(f"Не вдалося витягти File ID з: {url}")
+            return None
+
+        try:
+            request = self.drive_service.files().get_media(fileId=file_id)
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            data = buffer.getvalue()
+            logger.info(f"Завантажено з Drive: file_id={file_id}, розмір={len(data)} байт")
+            return data
+        except Exception as e:
+            logger.error(f"Помилка завантаження з Drive (file_id={file_id}): {e}")
+            return None
 
     # ==================== КАТАЛОГ ТОВАРІВ ====================
 
@@ -549,13 +657,26 @@ class GoogleSheetsManager:
             if note:
                 result += f"   Примітка: {note}\n"
 
-            # Фото (опис кольору → URL)
+            # Фото — або папка Drive (listуємо файли) або звичайні URL
             photo_raw = (
                 p.get('Фото URL') or p.get('Фото') or
                 p.get('Фото URL ') or p.get('Photo URL') or ''
             ).strip()
             if photo_raw:
-                result += f"   Фото: {photo_raw}\n"
+                if self.is_drive_folder_url(photo_raw):
+                    folder_id = self.extract_drive_folder_id(photo_raw)
+                    if folder_id:
+                        files = self.list_folder_files(folder_id)
+                        if files:
+                            result += "   Фото (використовуй URL з цього списку в маркерах [PHOTO:url] або [ALBUM:url1 url2 ...]):\n"
+                            for f in files:
+                                result += f"     {f['path']} → {f['url']}\n"
+                        else:
+                            result += "   Фото: папка порожня або недоступна\n"
+                    else:
+                        result += f"   Фото: {photo_raw}\n"
+                else:
+                    result += f"   Фото: {photo_raw}\n"
 
             # Ціни по розмірам
             prices = p.get('prices_by_size', [])
