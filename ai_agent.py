@@ -532,8 +532,8 @@ class AIAgent:
                     )
                 )
 
-            # Викликаємо Gemini API з retry (до 3 спроб при тимчасових помилках)
-            max_retries = 3
+            # Викликаємо Gemini API з retry (до 6 спроб при тимчасових помилках)
+            max_retries = 6
             last_error = None
             for attempt in range(1, max_retries + 1):
                 try:

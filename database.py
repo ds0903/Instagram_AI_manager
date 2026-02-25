@@ -4,11 +4,25 @@ PostgreSQL Database - conversations table
 Автоматично створює базу даних та таблиці при першому запуску.
 """
 import os
+import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
+
+# Регулярний вираз для видалення емодзі перед порівнянням текстів
+_EMOJI_RE = re.compile(
+    "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+    "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251"
+    "\U0001f926-\U0001f937\U00010000-\U0010ffff\u2640-\u2642"
+    "\u2600-\u2B55\u200d\u23cf\u23e9\u231a\ufe0f\u3030]+",
+    re.UNICODE
+)
+
+def _norm(text: str) -> str:
+    """Прибрати емодзі та зайві пробіли для нечіткого порівняння."""
+    return _EMOJI_RE.sub('', text or '').strip()
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -245,17 +259,23 @@ class Database:
 
     def is_bot_message_in_db(self, username: str, text: str) -> bool:
         """Перевірити чи є таке повідомлення бота (assistant) в БД для даного username.
-        Перевіряємо substring-пошуком: Instagram може відображати один DB-запис як декілька bubble,
-        тому текст з екрану може бути лише частиною повного збереженого тексту."""
-        # Ескейпимо спецсимволи LIKE: % і _
-        escaped = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        Порівняння без емодзі: Instagram іноді відображає текст без емодзі, хоча в БД він є.
+        Беремо перші 80 символів (після strip emoji) як ключ для пошуку."""
+        text_norm = _norm(text)
+        if not text_norm:
+            return True  # порожній текст — не блокуємо
+        prefix = text_norm[:80]
         with self.conn.cursor() as cur:
             cur.execute("""
-                SELECT id FROM conversations
-                WHERE username = %s AND role = 'assistant' AND content LIKE %s ESCAPE '\\'
-                LIMIT 1
-            """, (username, f'%{escaped}%'))
-            return cur.fetchone() is not None
+                SELECT content FROM conversations
+                WHERE username = %s AND role = 'assistant'
+                ORDER BY created_at DESC LIMIT 30
+            """, (username,))
+            rows = cur.fetchall()
+        for (content,) in rows:
+            if prefix in _norm(content):
+                return True
+        return False
 
     def get_last_user_message_id(self, username: str) -> int:
         """Отримати ID останнього повідомлення користувача."""
