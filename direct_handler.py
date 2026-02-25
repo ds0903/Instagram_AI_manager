@@ -2144,18 +2144,32 @@ class DirectHandler:
             headers = {'User-Agent': self.driver.evaluate("() => navigator.userAgent")}
 
             for url in urls:
-                url = self._convert_gdrive_url(url)
                 try:
-                    resp = requests.get(url, cookies=cookies, headers=headers, timeout=15)
-                    if resp.status_code != 200 or len(resp.content) < 1000:
-                        logger.warning(f"Не вдалося завантажити фото для альбому: {url[:60]}")
-                        continue
-                    ext = '.png' if resp.content[:4] == b'\x89PNG' else '.jpg'
+                    image_data = None
+
+                    # Drive API якщо це Google Drive посилання
+                    if 'drive.google.com' in url and self.ai_agent.sheets_manager:
+                        image_data = self.ai_agent.sheets_manager.download_drive_file(url)
+                        if image_data:
+                            logger.info(f"📸 Фото для альбому (Drive API): {len(image_data)} байт | {url[:80]}")
+                        else:
+                            logger.warning(f"📸 Drive API не зміг, пробую HTTP: {url[:80]}")
+
+                    # Fallback: HTTP
+                    if not image_data:
+                        conv_url = self._convert_gdrive_url(url)
+                        resp = requests.get(conv_url, cookies=cookies, headers=headers, timeout=15)
+                        if resp.status_code != 200 or len(resp.content) < 1000:
+                            logger.warning(f"Не вдалося завантажити фото для альбому: {url[:80]}")
+                            continue
+                        image_data = resp.content
+                        logger.info(f"📸 Фото для альбому (HTTP): {len(image_data)} байт | {url[:80]}")
+
+                    ext = '.png' if image_data[:4] == b'\x89PNG' else '.jpg'
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext, prefix='ig_album_')
-                    tmp.write(resp.content)
+                    tmp.write(image_data)
                     tmp_paths.append(tmp.name)
                     tmp.close()
-                    logger.info(f"📸 Фото для альбому: {len(resp.content)} байт")
                 except Exception as e:
                     logger.warning(f"Помилка завантаження фото для альбому: {e}")
 

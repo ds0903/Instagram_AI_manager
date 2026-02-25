@@ -122,7 +122,7 @@ class GoogleSheetsManager:
             for f in files:
                 full_path = f"{path_prefix}/{f['name']}" if path_prefix else f['name']
                 if f['mimeType'] == 'application/vnd.google-apps.folder':
-                    # Рекурсія в підпапку
+                    logger.info(f"Drive: підпапка '{full_path}'")
                     sub = self.list_folder_files(f['id'], path_prefix=full_path)
                     output.extend(sub)
                 else:
@@ -132,6 +132,7 @@ class GoogleSheetsManager:
                         'path': full_path,
                         'url': f"https://drive.google.com/uc?id={f['id']}"
                     })
+                    logger.info(f"Drive: файл '{full_path}' → id={f['id']}")
             return output
         except Exception as e:
             logger.error(f"Помилка listування папки {folder_id}: {e}")
@@ -668,10 +669,12 @@ class GoogleSheetsManager:
                     if folder_id:
                         files = self.list_folder_files(folder_id)
                         if files:
+                            logger.info(f"Drive папка для '{name}': знайдено {len(files)} файлів: {[f['path'] for f in files]}")
                             result += "   Фото (використовуй URL з цього списку в маркерах [PHOTO:url] або [ALBUM:url1 url2 ...]):\n"
                             for f in files:
                                 result += f"     {f['path']} → {f['url']}\n"
                         else:
+                            logger.warning(f"Drive папка для '{name}': порожня або недоступна (folder_id={folder_id})")
                             result += "   Фото: папка порожня або недоступна\n"
                     else:
                         result += f"   Фото: {photo_raw}\n"
