@@ -2497,24 +2497,16 @@ class DirectHandler:
 
             # 6. (Лід створюється тільки при підтвердженні замовлення — в _process_order)
 
-            # 7. Перевіряємо правила поведінки (Google Sheets)
-            media_types = {'voice', 'image', 'video', 'story_media'}
-            behavior_rule = None
-            if message_type not in media_types:
-                behavior_rule = self.ai_agent._check_behavior_rules(combined_content)
-            if behavior_rule and behavior_rule.get('Відповідь'):
-                response = behavior_rule.get('Відповідь')
-                logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
-            else:
-                # 8. Генеруємо відповідь через AI
-                response = self.ai_agent.generate_response(
-                    username=username,
-                    user_message=combined_content,
-                    display_name=display_name,
-                    message_type=message_type,
-                    image_data=story_images_list if story_images_list else image_data,
-                    audio_data=audio_data_list if audio_data_list else None
-                )
+            # 7. Генеруємо відповідь через AI (правила поведінки передані в промпт — AI вирішує сам)
+            self.ai_agent.pending_trigger_response = None
+            response = self.ai_agent.generate_response(
+                username=username,
+                user_message=combined_content,
+                display_name=display_name,
+                message_type=message_type,
+                image_data=story_images_list if story_images_list else image_data,
+                audio_data=audio_data_list if audio_data_list else None
+            )
 
             # 9. Перевіряємо ескалацію — AI сама вставляє [ESCALATION] якщо клієнт просить менеджера
             if response and '[ESCALATION]' in response:
@@ -2584,6 +2576,42 @@ class DirectHandler:
                         is_upsell=is_upsell
                     )
 
+                # CRM — передаємо лід в HugeProfit одразу при [LEAD_READY]
+                try:
+                    from hugeprofit import HugeProfitCRM
+                    crm = HugeProfitCRM()
+                    if crm.token:
+                        order_data_crm = {
+                            'full_name':   lead_ready_data.get('full_name') or display_name,
+                            'phone':       lead_ready_data.get('phone') or '',
+                            'city':        lead_ready_data.get('city') or '',
+                            'nova_poshta': lead_ready_data.get('nova_poshta') or '',
+                            'products':    lead_ready_data.get('products') or '',
+                            'total_price': lead_ready_data.get('total_price') or '',
+                        }
+                        product_id_map = {}
+                        if self.ai_agent.sheets_manager:
+                            try:
+                                product_id_map = self.ai_agent.sheets_manager.get_product_id_map()
+                            except Exception as _e:
+                                logger.warning(f"HugeProfit: product_id_map недоступна: {_e}")
+                        ok = crm.push_order(username=username, order_data=order_data_crm,
+                                            product_id_map=product_id_map)
+                        if ok:
+                            self.ai_agent.db.update_lead_status(username, 'imported')
+                            logger.info(f"HugeProfit: лід #{lead_id} передано в CRM ✓")
+                        else:
+                            logger.error(f"HugeProfit: не вдалося передати лід #{lead_id}")
+                            if self.ai_agent.telegram:
+                                self.ai_agent.telegram.notify_error(
+                                    f"❌ HugeProfit: не вдалося передати ліда\n"
+                                    f"👤 <b>{username}</b>\n"
+                                    f"📦 {order_data_crm.get('products', '—')}\n"
+                                    f"💰 {order_data_crm.get('total_price', '—')} грн"
+                                )
+                except Exception as _e:
+                    logger.error(f"HugeProfit: помилка при передачі ліда: {_e}")
+
                 response = self.ai_agent._strip_lead_ready_block(response)
 
             # 10.2. Парсимо [CONTACT_CHANGE:...] — клієнт хоче змінити контактні дані
@@ -2643,6 +2671,14 @@ class DirectHandler:
             for part in parts:
                 success = self.send_message(part)
                 time.sleep(0.8)
+
+            # 15.1. Якщо є відкладена trigger-відповідь (напр. "Будь ласка!" після AI-відповіді)
+            pending_trigger = getattr(self.ai_agent, 'pending_trigger_response', None)
+            if pending_trigger:
+                time.sleep(1.2)
+                self.send_message(pending_trigger)
+                logger.info(f"Відправлено trigger-відповідь окремо: '{pending_trigger[:60]}'")
+                self.ai_agent.pending_trigger_response = None
 
             # 16. Відправляємо фото / альбом
             if username not in self._sent_photos:

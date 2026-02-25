@@ -40,6 +40,9 @@ class AIAgent:
         self.telegram = None
         self._init_telegram()
 
+        # Відкладена trigger-відповідь (для відправки окремим повідомленням після AI-відповіді)
+        self.pending_trigger_response = None
+
         logger.info(f"AI Agent ініціалізовано, модель: {self.model}")
 
     def _init_google_sheets(self):
@@ -726,21 +729,16 @@ class AIAgent:
                 'Зрозуміло! Передаю ваше запитання нашому менеджеру. Він зв\'яжеться з вами найближчим часом.')
             response_text = escalation_note
         else:
-            # 5. Перевіряємо правила поведінки (Google Sheets, якщо є)
-            behavior_rule = self._check_behavior_rules(content)
-            if behavior_rule and behavior_rule.get('Відповідь'):
-                response_text = behavior_rule.get('Відповідь')
-                logger.info(f"Застосовано правило: {behavior_rule.get('Ситуація')}")
-            else:
-                # 6. Генеруємо відповідь через AI (fallback)
-                response_text = self.generate_response(
-                    username=username,
-                    user_message=content,
-                    display_name=display_name,
-                    message_type=message_type,
-                    image_data=image_data,
-                    audio_data=audio_data
-                )
+            # 5. Генеруємо відповідь через AI (правила поведінки передані в промпт — AI вирішує сам)
+            self.pending_trigger_response = None
+            response_text = self.generate_response(
+                username=username,
+                user_message=content,
+                display_name=display_name,
+                message_type=message_type,
+                image_data=image_data,
+                audio_data=audio_data
+            )
 
         # 7. Зберігаємо відповідь асистента
         assistant_msg_id = self.db.add_assistant_message(
