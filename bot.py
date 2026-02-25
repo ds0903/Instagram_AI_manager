@@ -87,13 +87,13 @@ def _watchdog_loop():
             logger.error("=" * 60)
             logger.error("Перезапускаємо скрипт (Camoufox закриється разом з процесом)...")
 
-            # Сповіщення в Telegram
-            try:
-                from telegram_notifier import TelegramNotifier
-                notifier = TelegramNotifier()
-                notifier.notify_error(f"Бот завис на {elapsed/60:.1f} хв. Перезапуск...")
-            except Exception:
-                pass
+            # Сповіщення в Telegram — вимкнено (watchdog часто спрацьовує під час норм. роботи)
+            # try:
+            #     from telegram_notifier import TelegramNotifier
+            #     notifier = TelegramNotifier()
+            #     notifier.notify_error(f"Бот завис на {elapsed/60:.1f} хв. Перезапуск...")
+            # except Exception:
+            #     pass
 
             # Перезапускаємо скрипт
             logger.error("Перезапуск скрипта через 5 секунд...")
