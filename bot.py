@@ -402,7 +402,7 @@ class InstagramBot:
 
                 logger.info("=" * 60)
                 logger.info("  AI AGENT ЗАПУЩЕНО!")
-                logger.info(f"  Інтервал перевірки: {check_interval}с")
+                logger.info(f"  Інтервал перевірки: {interval_min}-{interval_max}с (random)")
                 logger.info("  Ctrl+C для зупинки")
                 logger.info("=" * 60)
 

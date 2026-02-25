@@ -2493,8 +2493,64 @@ class DirectHandler:
                 # Видаляємо блок [ORDER] з тексту — клієнт не бачить
                 response = self.ai_agent._strip_order_block(response)
 
-            # 10.3. Парсимо маркер [SAVE_QUESTION:...] — AI вирішила що це нове питання
+            # 10.1. Парсимо [LEAD_READY] — всі контактні дані зібрані, створюємо ліда
             import re as _re
+            lead_ready_data = self.ai_agent._parse_lead_ready(response)
+            if lead_ready_data:
+                # Збираємо delivery_address: "ПІБ, місто, відд. X"
+                addr_parts = []
+                if lead_ready_data.get('full_name'):
+                    addr_parts.append(lead_ready_data['full_name'])
+                if lead_ready_data.get('city'):
+                    addr_parts.append(lead_ready_data['city'])
+                if lead_ready_data.get('nova_poshta'):
+                    addr_parts.append(f"відд. {lead_ready_data['nova_poshta']}")
+                delivery_address = ', '.join(addr_parts) if addr_parts else None
+
+                # Перевіряємо — перший лід чи допродаж
+                existing_leads_count = self.ai_agent.db.count_leads(username)
+                is_upsell = existing_leads_count > 0
+
+                lead_id = self.ai_agent.db.create_lead(
+                    username=username,
+                    display_name=lead_ready_data.get('full_name') or display_name,
+                    phone=lead_ready_data.get('phone'),
+                    city=lead_ready_data.get('city'),
+                    delivery_address=delivery_address,
+                    interested_products=lead_ready_data.get('products')
+                )
+                logger.info(
+                    f"{'Допродаж' if is_upsell else 'Новий'} лід #{lead_id} створено для {username}: "
+                    f"{lead_ready_data.get('products', '—')} | {delivery_address}"
+                )
+
+                # Telegram-нотифікація
+                if self.ai_agent.telegram:
+                    self.ai_agent.telegram.notify_new_lead(
+                        username=username,
+                        display_name=lead_ready_data.get('full_name') or display_name,
+                        phone=lead_ready_data.get('phone'),
+                        city=lead_ready_data.get('city'),
+                        delivery_address=delivery_address,
+                        products=lead_ready_data.get('products'),
+                        is_upsell=is_upsell
+                    )
+
+                response = self.ai_agent._strip_lead_ready_block(response)
+
+            # 10.2. Парсимо [CONTACT_CHANGE:...] — клієнт хоче змінити контактні дані
+            contact_change_desc = self.ai_agent._parse_contact_change(response)
+            if contact_change_desc:
+                if self.ai_agent.telegram:
+                    self.ai_agent.telegram.notify_contact_change(
+                        username=username,
+                        display_name=display_name,
+                        change_description=contact_change_desc
+                    )
+                logger.info(f"Запит на зміну даних від {username}: {contact_change_desc[:60]}")
+                response = self.ai_agent._strip_contact_change(response)
+
+            # 10.3. Парсимо маркер [SAVE_QUESTION:...] — AI вирішила що це нове питання
             save_q_match = _re.search(r'\[SAVE_QUESTION:(.*?)\]', response)
             if save_q_match:
                 if self.ai_agent.sheets_manager:
@@ -2524,15 +2580,7 @@ class DirectHandler:
                 self.ai_agent.db.update_answer_id(msg_id, assistant_msg_id)
             logger.info(f"Зв'язано {len(user_msg_ids)} повідомлень → answer #{assistant_msg_id}")
 
-            # 13. Сповіщення про нового ліда (перший контакт)
-            lead = self.ai_agent.db.get_lead(username)
-            if lead and lead.get('messages_count') == 1 and self.ai_agent.telegram:
-                self.ai_agent.telegram.notify_new_lead(
-                    username=username,
-                    display_name=display_name,
-                    phone=phone,
-                    products=combined_content[:100]
-                )
+            # 13. (нотифікація нового ліда тепер в блоці 10.1 через [LEAD_READY])
 
             # 14. Hover + Reply на останнє повідомлення користувача
             # msg_element = self._last_user_message_element

@@ -219,6 +219,62 @@ class AIAgent:
         """Видалити блок [ORDER]...[/ORDER] з тексту відповіді (клієнт не бачить)."""
         return re.sub(r'\s*\[ORDER\].*?\[/ORDER\]\s*', '', response, flags=re.DOTALL).strip()
 
+    def _parse_lead_ready(self, response: str) -> dict:
+        """
+        Парсинг блоку [LEAD_READY]...[/LEAD_READY] з відповіді AI.
+        Повертає dict з контактними даними або None.
+        Викликається коли AI зібрала всі дані (ПІБ, телефон, місто, НП).
+        """
+        match = re.search(r'\[LEAD_READY\](.*?)\[/LEAD_READY\]', response, re.DOTALL)
+        if not match:
+            return None
+
+        block = match.group(1).strip()
+        data = {}
+        for line in block.split('\n'):
+            line = line.strip()
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if key in ('піб', 'пiб', "ім'я", 'імя', 'name', 'піб (пов'):
+                    data['full_name'] = value
+                elif key in ('телефон', 'phone', 'тел'):
+                    data['phone'] = value
+                elif key in ('місто', 'city'):
+                    data['city'] = value
+                elif key in ('нп', 'нова пошта', 'відділення', 'nova_poshta'):
+                    data['nova_poshta'] = value
+                elif key in ('товари', 'товар', 'products'):
+                    data['products'] = value
+                elif key in ('сума', 'total', 'ціна'):
+                    data['total_price'] = value
+
+        if data.get('full_name') or data.get('phone'):
+            logger.info(f"[LEAD_READY] розпізнано: {data}")
+            return data
+        return None
+
+    def _strip_lead_ready_block(self, response: str) -> str:
+        """Видалити блок [LEAD_READY]...[/LEAD_READY] з тексту (клієнт не бачить)."""
+        return re.sub(r'\s*\[LEAD_READY\].*?\[/LEAD_READY\]\s*', '', response, flags=re.DOTALL).strip()
+
+    def _parse_contact_change(self, response: str) -> str:
+        """
+        Парсинг маркера [CONTACT_CHANGE:опис] з відповіді AI.
+        Повертає текст опису або None.
+        """
+        match = re.search(r'\[CONTACT_CHANGE:(.*?)\]', response, re.DOTALL)
+        if match:
+            desc = match.group(1).strip()
+            logger.info(f"[CONTACT_CHANGE] клієнт хоче змінити дані: {desc[:80]}")
+            return desc
+        return None
+
+    def _strip_contact_change(self, response: str) -> str:
+        """Видалити маркер [CONTACT_CHANGE:...] з тексту."""
+        return re.sub(r'\[CONTACT_CHANGE:.*?\]', '', response, flags=re.DOTALL).strip()
+
     def _parse_photo_markers(self, response: str) -> list:
         """
         Парсинг маркерів [PHOTO:https://...] з відповіді AI.
@@ -286,26 +342,8 @@ class AIAgent:
         )
         logger.info(f"Замовлення #{order_id} створено для {username}")
 
-        # Збираємо delivery_address: "ПІБ, місто, відд. X"
-        addr_parts = []
-        if order_data.get('full_name'):
-            addr_parts.append(order_data['full_name'])
-        if order_data.get('city'):
-            addr_parts.append(order_data['city'])
-        if order_data.get('nova_poshta'):
-            addr_parts.append(f"відд. {order_data['nova_poshta']}")
-        delivery_address = ', '.join(addr_parts) if addr_parts else None
-
-        # Створюємо/оновлюємо ліда — тільки тут, після підтвердження замовлення
-        lead_id = self.db.create_or_update_lead(
-            username=username,
-            display_name=display_name,
-            phone=order_data.get('phone'),
-            city=order_data.get('city'),
-            delivery_address=delivery_address,
-            interested_products=order_data.get('products')
-        )
-        logger.info(f"Лід створено/оновлено для {username}: {delivery_address}")
+        # Лід вже був створений при [LEAD_READY] — тут тільки логуємо
+        logger.info(f"Замовлення #{order_id} підтверджено для {username}")
 
         # Передаємо замовлення в HugeProfit CRM
         try:

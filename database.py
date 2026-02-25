@@ -130,11 +130,11 @@ class Database:
                 );
             """)
 
-            # Leads - потенційні клієнти
+            # Leads - потенційні клієнти (може бути кілька на один username — initial + upsell)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS leads (
                     id SERIAL PRIMARY KEY,
-                    username VARCHAR(255) NOT NULL UNIQUE,
+                    username VARCHAR(255) NOT NULL,
                     display_name VARCHAR(255),
                     phone VARCHAR(50),
                     email VARCHAR(255),
@@ -151,6 +151,18 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_leads_username ON leads(username);
                 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+            """)
+
+            # Міграція: прибираємо UNIQUE constraint на username (якщо ще є)
+            cur.execute("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'leads_username_key'
+                    ) THEN
+                        ALTER TABLE leads DROP CONSTRAINT leads_username_key;
+                    END IF;
+                END $$;
             """)
 
             # Міграція: додаємо delivery_address якщо не існує
@@ -364,42 +376,53 @@ class Database:
 
     # ==================== LEADS ====================
 
-    def create_or_update_lead(self, username: str, display_name: str = None,
-                               phone: str = None, email: str = None,
-                               city: str = None, delivery_address: str = None,
-                               interested_products: str = None,
-                               notes: str = None) -> int:
+    def create_lead(self, username: str, display_name: str = None,
+                    phone: str = None, email: str = None,
+                    city: str = None, delivery_address: str = None,
+                    interested_products: str = None,
+                    notes: str = None) -> int:
         """
-        Створити або оновити ліда.
-        Викликається ТІЛЬКИ при підтвердженні замовлення ([ORDER] блок).
+        Створити нового ліда (завжди INSERT — дозволено кілька лідів на username).
+        Викликається при отриманні [LEAD_READY] маркера (всі контактні дані зібрані).
         delivery_address: "ПІБ, місто, відділення НП"
-        interested_products: підтверджені замовлені товари
+        interested_products: товар з розміром і кольором
         """
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO leads (username, display_name, phone, email, city,
                                    delivery_address, interested_products, notes)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (username) DO UPDATE SET
-                    display_name = COALESCE(EXCLUDED.display_name, leads.display_name),
-                    phone = COALESCE(EXCLUDED.phone, leads.phone),
-                    email = COALESCE(EXCLUDED.email, leads.email),
-                    city = COALESCE(EXCLUDED.city, leads.city),
-                    delivery_address = COALESCE(EXCLUDED.delivery_address, leads.delivery_address),
-                    interested_products = COALESCE(EXCLUDED.interested_products, leads.interested_products),
-                    notes = COALESCE(EXCLUDED.notes, leads.notes),
-                    last_contact = CURRENT_TIMESTAMP,
-                    messages_count = leads.messages_count + 1
                 RETURNING id
             """, (username, display_name, phone, email, city,
                   delivery_address, interested_products, notes))
             return cur.fetchone()[0]
 
+    def create_or_update_lead(self, username: str, display_name: str = None,
+                               phone: str = None, email: str = None,
+                               city: str = None, delivery_address: str = None,
+                               interested_products: str = None,
+                               notes: str = None) -> int:
+        """Зворотна сумісність — делегує до create_lead()."""
+        return self.create_lead(
+            username=username, display_name=display_name, phone=phone,
+            email=email, city=city, delivery_address=delivery_address,
+            interested_products=interested_products, notes=notes
+        )
+
     def get_lead(self, username: str) -> dict:
-        """Отримати ліда за username."""
+        """Отримати останнього ліда за username."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM leads WHERE username = %s", (username,))
+            cur.execute(
+                "SELECT * FROM leads WHERE username = %s ORDER BY first_contact DESC LIMIT 1",
+                (username,)
+            )
             return cur.fetchone()
+
+    def count_leads(self, username: str) -> int:
+        """Кількість лідів для username (для визначення чи це новий клієнт)."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM leads WHERE username = %s", (username,))
+            return cur.fetchone()[0]
 
     def update_lead_status(self, username: str, status: str):
         """Оновити статус ліда (new, contacted, qualified, converted, lost)."""

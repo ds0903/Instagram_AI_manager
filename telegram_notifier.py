@@ -165,16 +165,38 @@ class TelegramNotifier:
         return self.send_message(text)
 
     def notify_new_lead(self, username: str, display_name: str,
-                        phone: str = None, products: str = None) -> bool:
-        text = f"""🎯 <b>НОВИЙ ЛІД!</b>
+                        phone: str = None, city: str = None,
+                        delivery_address: str = None,
+                        products: str = None, is_upsell: bool = False) -> bool:
+        title = "➕ <b>ДОПРОДАЖ — НОВИЙ ЛІД!</b>" if is_upsell else "🎯 <b>НОВИЙ ЛІД!</b>"
+        text = f"""{title}
 
 👤 <b>Клієнт:</b> @{username}
-📛 <b>Ім'я:</b> {display_name or 'Невідомо'}
+📛 <b>ПІБ:</b> {display_name or 'Невідомо'}
 """
         if phone:
             text += f"📱 <b>Телефон:</b> {phone}\n"
+        if city:
+            text += f"🏙️ <b>Місто:</b> {city}\n"
+        if delivery_address:
+            text += f"📦 <b>Адреса:</b> {delivery_address}\n"
         if products:
-            text += f"🛒 <b>Цікавлять:</b> {products}\n"
+            text += f"🛒 <b>Товар:</b> {products}\n"
+        return self.send_message(text)
+
+    def notify_contact_change(self, username: str, display_name: str,
+                               change_description: str) -> bool:
+        """Сповіщення коли клієнт хоче змінити контактні дані."""
+        text = f"""✏️ <b>ЗАПИТ НА ЗМІНУ ДАНИХ</b>
+
+👤 <b>Клієнт:</b> @{username}
+📛 <b>Ім'я:</b> {display_name or 'Невідомо'}
+
+📝 <b>Що хоче змінити:</b>
+<i>{change_description[:500]}</i>
+
+⚠️ Потрібна ручна зміна даних менеджером.
+"""
         return self.send_message(text)
 
     def notify_new_order(self, username: str, order_data: dict) -> bool:
