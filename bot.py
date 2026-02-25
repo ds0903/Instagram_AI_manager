@@ -10,6 +10,7 @@ Instagram AI Agent Bot
 from camoufox.sync_api import Camoufox
 import pickle
 import time
+import random
 import re
 import os
 import sys
@@ -316,7 +317,7 @@ class InstagramBot:
         except Exception as e:
             logger.warning(f"Не вдалося відправити в Telegram: {e}")
 
-    def run(self, session_name: str = None, check_interval: int = 30):
+    def run(self, session_name: str = None, interval_min: int = 30, interval_max: int = 120):
         """
         Головний потік з автоперезапуском.
         - Watchdog (3 хв таймаут)
@@ -383,16 +384,17 @@ class InstagramBot:
                 # 5. Запускаємо одну ітерацію (single_run=True → повернеться після обробки)
                 heartbeat("Старт циклу inbox")
                 self.direct_handler.run_inbox_loop(
-                    check_interval=check_interval,
+                    check_interval=interval_min,
                     heartbeat_callback=heartbeat,
                     single_run=True
                 )
 
-                # Ітерація завершена — закриваємо браузер і чекаємо
-                logger.info(f"Ітерація завершена. Закриваю браузер, чекаю {check_interval}с...")
+                # Ітерація завершена — рандомна пауза між ітераціями
+                sleep_sec = random.randint(interval_min, interval_max)
+                logger.info(f"Ітерація завершена. Закриваю браузер, чекаю {sleep_sec}с (діапазон {interval_min}-{interval_max}с)...")
                 self.close()
                 heartbeat("Очікування між ітераціями")
-                time.sleep(check_interval)
+                time.sleep(sleep_sec)
                 restart_count = 0  # Не помилка — скидаємо лічильник
 
             except KeyboardInterrupt:
@@ -433,7 +435,8 @@ class InstagramBot:
 
 def main():
     session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
-    check_interval = int(os.getenv('CHECK_INTERVAL_SECONDS', 30))
+    interval_min = int(os.getenv('CHECK_INTERVAL_MIN', 30))
+    interval_max = int(os.getenv('CHECK_INTERVAL_MAX', 120))
 
     # Аргументи командного рядка
     if '--session' in sys.argv:
@@ -459,7 +462,7 @@ def main():
         logger.warning(f"TelegramAdminListener не запущено: {e}")
 
     bot = InstagramBot()
-    bot.run(session_name, check_interval=check_interval)
+    bot.run(session_name, interval_min=interval_min, interval_max=interval_max)
 
 
 if __name__ == '__main__':
