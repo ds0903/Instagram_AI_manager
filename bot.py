@@ -435,14 +435,21 @@ class InstagramBot:
                 return True
 
             except Exception as e:
-                logger.error(f"Помилка: {e}")
-                import traceback
-                traceback.print_exc()
+                # Перевіряємо чи це SessionKickedError (сесія скинута Instagram)
+                from direct_handler import SessionKickedError
+                is_session_kicked = isinstance(e, SessionKickedError)
+
+                if is_session_kicked:
+                    restart_count += 1
+                    logger.warning(f"Instagram скинув сесію! Спроба {restart_count}/{max_restarts}")
+                else:
+                    logger.error(f"Помилка: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    restart_count += 1
 
                 # Закриваємо браузер
                 self.close()
-
-                restart_count += 1
 
                 if restart_count < max_restarts:
                     logger.info(f"Перезапуск через 10 секунд... (спроба {restart_count}/{max_restarts})")
@@ -458,7 +465,11 @@ class InstagramBot:
             logger.error(f"ДОСЯГНУТО ЛІМІТ {max_restarts} ПЕРЕЗАПУСКІВ!")
             logger.error("Щось серйозно не так. Перевір сесію/інтернет.")
             logger.error("=" * 60)
-            self._notify_telegram(f"Бот зупинено: досягнуто ліміт {max_restarts} перезапусків!")
+            self._notify_telegram(
+                f"🔴 Бот зупинено!\n"
+                f"Instagram {max_restarts} рази поспіль скинув сесію.\n"
+                f"Потрібно вручну оновити сесію через login_helper.py"
+            )
 
         stop_watchdog()
         return False

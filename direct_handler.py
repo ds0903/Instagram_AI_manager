@@ -17,12 +17,15 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+class SessionKickedError(Exception):
+    """Instagram скинув сесію — потрібен перезапуск ітерації."""
+    pass
+
+
 class DirectHandler:
-    # Всі 3 локації для перевірки непрочитаних чатів
+    # Локації для перевірки непрочитаних чатів (тільки інбокс)
     DM_LOCATIONS = [
         {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},
-        {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},
-        {'url': 'https://www.instagram.com/direct/requests/hidden/', 'name': 'Приховані запити'},
     ]
 
     # [DEBUG] Фільтр — відповідаємо тільки цьому username (None = всім)
@@ -57,11 +60,54 @@ class DirectHandler:
         except Exception:
             pass
 
+    def _dismiss_continue_popup(self):
+        """Перевіряємо чи Instagram викинув з сесії (вікно 'Continue as ...').
+        Якщо так — піднімаємо SessionKickedError щоб bot.py перезапустив ітерацію."""
+        try:
+            # Стратегія 1: aria-label="Continue" — точний атрибут з реального HTML
+            btn = self.driver.query_selector('[aria-label="Continue"]')
+            # Стратегія 2 (fallback): span з текстом "Continue" всередині role=button
+            if not btn:
+                btn = self.driver.query_selector(
+                    "xpath=//div[@role='button'][.//span[text()='Continue']]"
+                )
+            if not btn:
+                return
+
+            # Знайшли кнопку — сесія скинута
+            logger.warning("Виявлено вікно 'Continue' — Instagram скинув сесію!")
+            raise SessionKickedError("Instagram виkинув з сесії (кнопка Continue)")
+
+            # --- Логіка автовходу (закоментовано, залишено для довідки) ---
+            # btn.click()
+            # time.sleep(2)
+            # pwd_input = self.driver.query_selector('input[placeholder="Password"], input[type="password"]')
+            # if pwd_input:
+            #     password = os.getenv('INSTAGRAM_PASSWORD', '')
+            #     if password:
+            #         pwd_input.fill(password)
+            #         time.sleep(0.5)
+            #         login_btn = self.driver.query_selector(
+            #             "xpath=//div[@role='button'][.//span[text()='Log in']]"
+            #         )
+            #         if login_btn:
+            #             login_btn.click()
+            #         else:
+            #             pwd_input.press('Enter')
+            #         time.sleep(5)
+        except SessionKickedError:
+            raise  # пробрасуємо далі
+        except Exception:
+            pass
+
     def go_to_location(self, url: str) -> bool:
         """Перехід на конкретну сторінку Direct (inbox/requests/hidden)."""
         try:
             self.driver.goto(url)
             time.sleep(3)
+
+            # Перевіряємо чи не з'явилось вікно вибору профілю "Continue as ..."
+            self._dismiss_continue_popup()
 
             self._dismiss_popups()
 
@@ -77,6 +123,8 @@ class DirectHandler:
 
             logger.info(f"Відкрито: {url}")
             return True
+        except SessionKickedError:
+            raise  # пробрасуємо в bot.py
         except Exception as e:
             logger.error(f"Помилка відкриття {url}: {e}")
             return False
