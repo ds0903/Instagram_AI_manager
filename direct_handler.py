@@ -2335,7 +2335,8 @@ class DirectHandler:
                         )
                     logger.info(
                         f"⚠️ [{username}] Останнє повідомлення бота не в БД — "
-                        f"менеджер писав вручну. Пропускаємо."
+                        f"менеджер писав вручну. Пропускаємо.\n"
+                        f"   Текст що не знайшовся в БД: '{last_bot_text[:120]}'"
                     )
                     return False
 
@@ -2669,6 +2670,16 @@ class DirectHandler:
             #     self.hover_and_click_reply(msg_element, chat_username=username)
 
             # 15. Відправляємо текстову відповідь
+            # Ядерний захист — знищуємо будь-які залишкові маркери перед відправкою клієнту
+            # (на випадок якщо AI не поставила закриваючий тег або попередній strip не спрацював)
+            response = _re.sub(r'\[LEAD_READY\].*?(\[/LEAD_READY\]|$)', '', response, flags=_re.DOTALL).strip()
+            response = _re.sub(r'\[ORDER\].*?(\[/ORDER\]|$)', '', response, flags=_re.DOTALL).strip()
+            response = _re.sub(r'\[CONTACT_CHANGE:[^\]]*\]', '', response).strip()
+            response = _re.sub(r'\[SAVE_QUESTION:[^\]]*\]', '', response).strip()
+            response = _re.sub(r'\[ESCALATION\]', '', response).strip()
+            response = _re.sub(r'\[PHOTO:[^\]]*\]', '', response).strip()
+            response = _re.sub(r'\[ALBUM:[^\]]*\]', '', response).strip()
+
             # Якщо є \n\n — це розділювач між блоками (опис + питання)
             # Кожен блок відправляємо окремим повідомленням
             parts = [p.strip() for p in response.split('\n\n') if p.strip()]

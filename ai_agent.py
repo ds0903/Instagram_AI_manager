@@ -260,7 +260,11 @@ class AIAgent:
 
     def _strip_lead_ready_block(self, response: str) -> str:
         """Видалити блок [LEAD_READY]...[/LEAD_READY] з тексту (клієнт не бачить)."""
-        return re.sub(r'\s*\[LEAD_READY\].*?\[/LEAD_READY\]\s*', '', response, flags=re.DOTALL).strip()
+        # Варіант 1: є закриваючий тег [/LEAD_READY]
+        result = re.sub(r'\s*\[LEAD_READY\].*?\[/LEAD_READY\]\s*', '', response, flags=re.DOTALL)
+        # Варіант 2: немає закриваючого тегу — стрипаємо від [LEAD_READY] до кінця тексту
+        result = re.sub(r'\s*\[LEAD_READY\].*$', '', result, flags=re.DOTALL)
+        return result.strip()
 
     def _parse_contact_change(self, response: str) -> str:
         """
