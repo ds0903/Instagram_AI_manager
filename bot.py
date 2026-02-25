@@ -16,8 +16,15 @@ import os
 import sys
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+
+try:
+    import pytz
+    KYIV_TZ = pytz.timezone('Europe/Kiev')
+except ImportError:
+    KYIV_TZ = None
 
 load_dotenv()
 
@@ -114,6 +121,24 @@ def stop_watchdog():
     global _watchdog_running
     _watchdog_running = False
 
+
+
+def is_work_time() -> bool:
+    """Перевірити чи зараз робочий час (за київським часом)."""
+    if os.getenv('WORK_SCHEDULE_ENABLED', 'false').lower() != 'true':
+        return True  # Графік вимкнено — завжди працюємо
+
+    start = int(os.getenv('WORK_START_HOUR', 9))
+    end = int(os.getenv('WORK_END_HOUR', 23))
+
+    if KYIV_TZ:
+        now = datetime.now(KYIV_TZ)
+    else:
+        # Fallback без pytz — UTC+2/+3
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc) + timedelta(hours=2)
+
+    return start <= now.hour < end
 
 
 class InstagramBot:
@@ -396,6 +421,12 @@ class InstagramBot:
                 heartbeat("Очікування між ітераціями")
                 time.sleep(sleep_sec)
                 restart_count = 0  # Не помилка — скидаємо лічильник
+
+                # Перевірка графіку роботи (після паузи, перед наступною ітерацією)
+                while not is_work_time():
+                    logger.info("Поза робочим часом — чекаю 5 хв...")
+                    heartbeat("Очікування робочого часу")
+                    time.sleep(300)
 
             except KeyboardInterrupt:
                 logger.info("Зупинка за запитом користувача (Ctrl+C)")

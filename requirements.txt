@@ -16,5 +16,6 @@ requests
 python-dotenv
 PyYAML
 setuptools
+pytz
 camoufox
 camoufox[geoip]
