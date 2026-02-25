@@ -353,6 +353,12 @@ class AIAgent:
         logger.info(f"Замовлення #{order_id} підтверджено для {username}")
 
         # Передаємо замовлення в HugeProfit CRM
+        # Якщо лід вже 'imported' (тобто [LEAD_READY] вже відправив) — пропускаємо дублікат.
+        # Але якщо лід НЕ imported (напр. [LEAD_READY] не спрацював) — відправляємо як fallback.
+        existing_lead = self.db.get_lead(username)
+        if existing_lead and existing_lead.get('status') == 'imported':
+            logger.info(f"HugeProfit: лід {username} вже imported — пропускаємо дублікат при [ORDER]")
+            return order_id
         try:
             from hugeprofit import HugeProfitCRM
             crm = HugeProfitCRM()
