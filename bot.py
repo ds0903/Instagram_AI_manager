@@ -354,12 +354,15 @@ class InstagramBot:
 
         restart_count = 0
         max_restarts = 3
+        relogin_attempted = False  # Автологін — тільки одна спроба
 
         # Запускаємо watchdog
         start_watchdog()
         heartbeat("Старт бота")
 
-        while restart_count < max_restarts:
+        while True:  # зовнішній цикл — для auto-relogin після 3 невдач
+          restart_count = 0
+          while restart_count < max_restarts:
             try:
                 if restart_count > 0:
                     logger.info("=" * 60)
@@ -459,17 +462,44 @@ class InstagramBot:
                 else:
                     break
 
-        # Досягнуто ліміт перезапусків
-        if restart_count >= max_restarts:
-            logger.error("=" * 60)
-            logger.error(f"ДОСЯГНУТО ЛІМІТ {max_restarts} ПЕРЕЗАПУСКІВ!")
-            logger.error("Щось серйозно не так. Перевір сесію/інтернет.")
-            logger.error("=" * 60)
-            self._notify_telegram(
-                f"🔴 Бот зупинено!\n"
-                f"Instagram {max_restarts} рази поспіль скинув сесію.\n"
-                f"Потрібно вручну оновити сесію через login_helper.py"
-            )
+          # ── Внутрішній цикл завершився (3 невдачі) ──
+          if restart_count >= max_restarts and not relogin_attempted:
+              # Пробуємо автоматично відновити сесію
+              ig_user = os.getenv('INSTAGRAM_USERNAME', '')
+              ig_pass = os.getenv('INSTAGRAM_PASSWORD', '')
+              session_json = str(SESSIONS_DIR / session_name.replace('.pkl', '.json'))
+
+              if ig_user and ig_pass:
+                  logger.info("=" * 60)
+                  logger.info("  AUTO-RELOGIN: спроба відновити сесію...")
+                  logger.info("=" * 60)
+                  relogin_attempted = True
+                  try:
+                      from auto_login import auto_relogin
+                      ok = auto_relogin(session_json, ig_user, ig_pass)
+                  except Exception as re_err:
+                      logger.error(f"Auto-relogin помилка: {re_err}")
+                      ok = False
+
+                  if ok:
+                      logger.info("Сесію відновлено! Перезапускаю бота...")
+                      relogin_attempted = False  # дозволяємо ще одну спробу в майбутньому
+                      continue  # перезапускаємо зовнішній цикл
+                  else:
+                      logger.error("Auto-relogin не вдався")
+                      self._notify_telegram(
+                          f"🔴 Бот зупинено!\n"
+                          f"Instagram {max_restarts} рази скинув сесію.\n"
+                          f"Автоматичний вхід також не вдався.\n"
+                          f"Потрібне ручне втручання!"
+                      )
+              else:
+                  self._notify_telegram(
+                      f"🔴 Бот зупинено!\n"
+                      f"Instagram {max_restarts} рази поспіль скинув сесію.\n"
+                      f"Задай INSTAGRAM_USERNAME і INSTAGRAM_PASSWORD в .env для авто-відновлення."
+                  )
+          break  # виходимо з зовнішнього циклу
 
         stop_watchdog()
         return False
