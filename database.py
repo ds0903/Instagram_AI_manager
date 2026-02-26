@@ -446,7 +446,29 @@ class Database:
         Викликається при отриманні [LEAD_READY] маркера (всі контактні дані зібрані).
         delivery_address: "ПІБ, місто, відділення НП"
         interested_products: товар з розміром і кольором
+
+        Дедублікація: якщо вже існує лід з тим самим username + phone + products
+        за останні 1 годину — повертаємо існуючий id (не створюємо дубль).
         """
+        # Дедублікація — захист від повторного [LEAD_READY] для того самого товару
+        if phone and interested_products:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id FROM leads
+                    WHERE username = %s
+                      AND phone = %s
+                      AND interested_products = %s
+                      AND first_contact >= NOW() - INTERVAL '1 hour'
+                    LIMIT 1
+                """, (username, phone, interested_products))
+                existing = cur.fetchone()
+                if existing:
+                    logger.info(
+                        f"Дедублікація ліда: вже існує id={existing[0]} "
+                        f"для {username} / {phone} / {interested_products[:60]}"
+                    )
+                    return existing[0]
+
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO leads (username, display_name, phone, email, city,
