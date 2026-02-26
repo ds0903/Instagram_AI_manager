@@ -894,12 +894,17 @@ class DirectHandler:
         """
         Фільтрація: залишити тільки НЕВІДПОВІДЖЕНІ повідомлення.
 
-        Текст: збіг content в БД + answer_id NOT NULL → вже відповіли.
-        Медіа ([Голосове], [Відео], [Фото]): контент завжди однаковий,
-        тому перевіряємо по Y-позиції: якщо медіа НИЖЧЕ останньої відповіді бота
-        на екрані → це нове повідомлення (бот ще не відповів на нього).
-        Це надійно працює незалежно від lazy loading.
+        Медіа ([Голосове], [Відео], [Фото]): Y-позиція > last_bot_y → нове.
+
+        Текст: count-based підрахунок.
+          - Рахуємо скільки разів кожен текст є в БД з answer_id (вже відповіли).
+          - Перебираємо повідомлення з екрану по черзі: якщо цей текст ще є в
+            "залишку відповіджених" — вважаємо оброблений (зменшуємо залишок).
+          - Якщо залишок вичерпано — повідомлення НОВЕ, навіть якщо текст збігається
+            з раніше відповіджіним (захист від дублів типу "Так", "Ок" тощо).
         """
+        from collections import Counter
+
         db_history = self.ai_agent.db.get_conversation_history(username, limit=50)
         media_labels = {'[Голосове]', '[Відео]', '[Фото]'}
 
@@ -907,27 +912,35 @@ class DirectHandler:
         last_bot_y = getattr(self, '_last_assistant_y', 0)
         logger.info(f"Фільтр: last_bot_y={last_bot_y}")
 
+        # Скільки разів кожен текст вже відповіли в БД
+        answered_counts = Counter(
+            db_msg['content'] for db_msg in db_history
+            if db_msg['role'] == 'user' and db_msg.get('answer_id')
+        )
+        remaining = dict(answered_counts)  # споживаємо при переборі
+
         unanswered = []
         for msg in screen_messages:
-            if msg['content'] in media_labels:
+            content = msg['content']
+            y_pos = msg.get('y_position', 0)
+
+            if content in media_labels:
                 # Медіа — нове якщо НИЖЧЕ останньої відповіді бота (більша Y)
-                if msg['y_position'] > last_bot_y:
-                    logger.info(f"Медіа '{msg['content']}' y={msg['y_position']} > bot_y={last_bot_y} → НОВЕ")
+                if y_pos > last_bot_y:
+                    logger.info(f"Медіа '{content}' y={y_pos} > bot_y={last_bot_y} → НОВЕ")
                     unanswered.append(msg)
                 else:
-                    logger.info(f"Медіа '{msg['content']}' y={msg['y_position']} <= bot_y={last_bot_y} → вже відповіли")
+                    logger.info(f"Медіа '{content}' y={y_pos} <= bot_y={last_bot_y} → вже відповіли")
+            elif last_bot_y > 0 and y_pos > last_bot_y:
+                # Текст нижче останньої відповіді бота → однозначно НОВЕ (без DB перевірки)
+                logger.info(f"Текст '{content[:50]}' y={y_pos} > bot_y={last_bot_y} → НОВЕ (нижче бота)")
+                unanswered.append(msg)
             else:
-                # Текст — стара логіка по content match в БД
-                already_answered = False
-                for db_msg in db_history:
-                    if db_msg['role'] != 'user':
-                        continue
-                    if db_msg['content'] != msg['content']:
-                        continue
-                    if db_msg.get('answer_id'):
-                        already_answered = True
-                    break
-                if not already_answered:
+                # Текст вище/рівне бота → count-based перевірка по БД
+                if remaining.get(content, 0) > 0:
+                    remaining[content] -= 1
+                    logger.debug(f"Текст '{content[:50]}' — вже відповіли (залишок: {remaining[content]})")
+                else:
                     unanswered.append(msg)
 
         return unanswered
