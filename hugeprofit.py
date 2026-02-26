@@ -324,6 +324,18 @@ class HugeProfitCRM:
             logger.error("HugeProfit: не вдалося отримати account_id")
             return None
 
+        sale_type = 'Допродаж' if order_data.get('is_upsell') else 'Продаж'
+        products_text = order_data.get('products', '').strip()
+        address_text = (
+            f"{order_data.get('full_name', '')} | "
+            f"{order_data.get('city', '')} відд. {order_data.get('nova_poshta', '')}"
+        ).strip(" |")
+        comment_parts = [sale_type]
+        if products_text:
+            comment_parts.append(products_text)
+        if address_text:
+            comment_parts.append(address_text)
+
         data = {
             "client_id": client_id,
             "order_status": "saled",
@@ -332,10 +344,7 @@ class HugeProfitCRM:
             "prepaid_amount": "",
             "account_id": account_id,
             "products": products,
-            "comment": (
-                f"{order_data.get('full_name', '')} | "
-                f"{order_data.get('city', '')} відд. {order_data.get('nova_poshta', '')}"
-            ).strip(" |"),
+            "comment": "\n".join(comment_parts),
             "channel_id": [],
         }
 

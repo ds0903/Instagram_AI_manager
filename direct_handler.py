@@ -2575,13 +2575,15 @@ class DirectHandler:
                 existing_leads_count = self.ai_agent.db.count_leads(username)
                 is_upsell = existing_leads_count > 0
 
+                lead_note = 'Допродаж' if is_upsell else 'Продаж'
                 lead_id = self.ai_agent.db.create_lead(
                     username=username,
                     display_name=lead_ready_data.get('full_name') or display_name,
                     phone=lead_ready_data.get('phone'),
                     city=lead_ready_data.get('city'),
                     delivery_address=delivery_address,
-                    interested_products=lead_ready_data.get('products')
+                    interested_products=lead_ready_data.get('products'),
+                    notes=lead_note
                 )
                 logger.info(
                     f"{'Допродаж' if is_upsell else 'Новий'} лід #{lead_id} створено для {username}: "
@@ -2612,6 +2614,7 @@ class DirectHandler:
                             'nova_poshta': lead_ready_data.get('nova_poshta') or '',
                             'products':    lead_ready_data.get('products') or '',
                             'total_price': lead_ready_data.get('total_price') or '',
+                            'is_upsell':   is_upsell,
                         }
                         product_id_map = {}
                         if self.ai_agent.sheets_manager:
