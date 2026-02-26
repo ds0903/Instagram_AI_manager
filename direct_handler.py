@@ -2872,6 +2872,107 @@ class DirectHandler:
             logger.error(f"Помилка process_chat_by_click: {e}")
             return False
 
+    def _open_chat_by_username_from_inbox(self, username: str) -> bool:
+        """Відкрити переписку з username зі сторінки інбоксу.
+        Спочатку шукаємо span[@title=username] у видимому списку,
+        якщо нема — використовуємо DM search input."""
+        try:
+            # Переходимо в інбокс
+            self.go_to_location('https://www.instagram.com/direct/inbox/')
+            time.sleep(2)
+
+            # Спроба 1: шукаємо у видимому списку
+            spans = self.driver.locator(f"xpath=//span[@title='{username}']").all()
+            for span in spans:
+                try:
+                    clickable = None
+                    try:
+                        clickable = span.locator("xpath=./ancestor::div[@role='button']").first
+                    except Exception:
+                        try:
+                            clickable = span.locator("xpath=./ancestor::div[@role='listitem']").first
+                        except Exception:
+                            continue
+                    clickable.click()
+                    time.sleep(3)
+                    logger.info(f"Застарілий чат {username} відкрито зі списку")
+                    return True
+                except Exception:
+                    continue
+
+            # Спроба 2: DM search input
+            search_inputs = self.driver.locator(
+                "xpath=//input[@placeholder='Search' or @placeholder='Пошук' or @placeholder='Поиск']"
+            ).all()
+            if not search_inputs:
+                logger.warning(f"Не знайдено search input для пошуку {username}")
+                return False
+
+            search_input = search_inputs[0]
+            search_input.click()
+            time.sleep(1)
+            search_input.fill(username)
+            time.sleep(2)
+
+            # Клікаємо на перший результат
+            results = self.driver.locator(f"xpath=//span[@title='{username}']").all()
+            if not results:
+                # Пробуємо по частковому збігу через contains
+                results = self.driver.locator(
+                    f"xpath=//div[@role='button' or @role='listitem'][.//span[contains(text(), '{username}')]]"
+                ).all()
+
+            if not results:
+                logger.warning(f"Пошук не дав результатів для {username}")
+                return False
+
+            results[0].click()
+            time.sleep(3)
+            logger.info(f"Застарілий чат {username} відкрито через пошук")
+            return True
+
+        except Exception as e:
+            logger.error(f"Помилка відкриття застарілого чату {username}: {e}")
+            return False
+
+    def check_stale_chats(self) -> int:
+        """Перевірка застарілих чатів в кінці ітерації.
+        Якщо бот писав останнім > STALE_CHAT_TIMEOUT_MINUTES хвилин тому —
+        заходимо і скануємо: раптом клієнт написав а ми пропустили."""
+        timeout = int(os.getenv('STALE_CHAT_TIMEOUT_MINUTES', '15'))
+        stale_usernames = self.ai_agent.db.get_stale_bot_chats(timeout)
+
+        if not stale_usernames:
+            logger.info(f"🕐 Застарілих чатів (> {timeout}хв без відповіді клієнта) не знайдено")
+            return 0
+
+        logger.info(f"🕐 Знайдено {len(stale_usernames)} застарілих чатів (бот писав > {timeout}хв тому): {stale_usernames}")
+
+        processed = 0
+        for username in stale_usernames:
+            if self.DEBUG_ONLY_USERNAME and username != self.DEBUG_ONLY_USERNAME:
+                continue
+            try:
+                logger.info(f"🔍 Перевіряємо застарілий чат: {username}")
+                if not self._open_chat_by_username_from_inbox(username):
+                    logger.warning(f"Не вдалось відкрити чат {username} — пропускаємо")
+                    continue
+
+                display_name = self.get_display_name()
+                result = self._process_opened_chat(username, display_name)
+                if result:
+                    logger.info(f"✅ Застарілий чат {username}: знайдено і оброблено нові повідомлення")
+                    processed += 1
+                else:
+                    logger.info(f"ℹ️ Застарілий чат {username}: нових повідомлень немає")
+
+                time.sleep(random.uniform(2, 4))
+
+            except Exception as e:
+                logger.error(f"Помилка перевірки застарілого чату {username}: {e}")
+
+        return processed
+
     def run_inbox_loop(self, check_interval: int = 30, heartbeat_callback=None, single_run: bool = False):
         """
         Головний цикл: перевіряє локації ПО ЧЕРЗІ.
@@ -2959,6 +3060,11 @@ class DirectHandler:
                     time.sleep(random.uniform(1, 2))
 
                 logger.info(f"Оброблено {total_processed} чатів.")
+
+                # Перевірка застарілих чатів (бот писав останнім > N хв тому)
+                heartbeat("Перевірка застарілих чатів")
+                self.check_stale_chats()
+
                 heartbeat("Ітерація завершена")
 
                 if single_run:

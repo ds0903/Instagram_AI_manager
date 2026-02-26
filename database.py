@@ -278,6 +278,24 @@ class Database:
                 return True
         return False
 
+    def get_stale_bot_chats(self, timeout_minutes: int) -> list[str]:
+        """Повернути список username де остання повідомлення = assistant
+        і пройшло більше timeout_minutes хвилин — треба перевірити чи не прийшло нове."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.username
+                FROM conversations c
+                INNER JOIN (
+                    SELECT username, MAX(created_at) AS last_at
+                    FROM conversations
+                    GROUP BY username
+                ) latest ON c.username = latest.username AND c.created_at = latest.last_at
+                WHERE c.role = 'assistant'
+                  AND c.created_at < NOW() - INTERVAL '%s minutes'
+            """ % int(timeout_minutes))
+            rows = cur.fetchall()
+        return [row[0] for row in rows]
+
     def get_last_assistant_message(self, username: str) -> dict | None:
         """Отримати останнє повідомлення бота з БД (id + content)."""
         with self.conn.cursor() as cur:
