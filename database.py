@@ -484,6 +484,19 @@ class Database:
             cur.execute("SELECT COUNT(*) FROM leads WHERE username = %s", (username,))
             return cur.fetchone()[0]
 
+    def count_leads_recent(self, username: str, hours: int = 4) -> int:
+        """Кількість лідів за останні N годин.
+        Використовується щоб визначити Продаж vs Допродаж:
+        перший LEAD_READY в поточній сесії = Продаж,
+        наступний (в тих самих 4 годинах) = Допродаж."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM leads
+                WHERE username = %s
+                  AND first_contact >= NOW() - INTERVAL '%s hours'
+            """ % ('%s', int(hours)), (username,))
+            return cur.fetchone()[0]
+
     def update_lead_status(self, username: str, status: str):
         """Оновити статус ліда (new, contacted, qualified, converted, lost)."""
         with self.conn.cursor() as cur:
