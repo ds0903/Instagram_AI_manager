@@ -2323,22 +2323,45 @@ class DirectHandler:
             last_bot_text = getattr(self, '_last_assistant_text', None)
             if last_bot_text:
                 if not self.ai_agent.db.is_bot_message_in_db(username, last_bot_text):
-                    # Перевіряємо чи є нові (невідповіджені) повідомлення від клієнта
-                    unanswered_check = self._filter_unanswered(user_messages, username)
-                    if unanswered_check and getattr(self.ai_agent, 'telegram', None):
-                        last_msg = unanswered_check[-1]['content']
-                        self.ai_agent.telegram.notify_manager_chat_new_message(
-                            username=username,
-                            display_name=display_name,
-                            last_message=last_msg,
-                            count=len(unanswered_check)
-                        )
+                    # Текст не знайшовся — спочатку питаємо AI чи це хибна тривога
                     logger.info(
-                        f"⚠️ [{username}] Останнє повідомлення бота не в БД — "
-                        f"менеджер писав вручну. Пропускаємо.\n"
-                        f"   Текст що не знайшовся в БД: '{last_bot_text[:120]}'"
+                        f"⚠️ [{username}] Текст з екрану не знайшовся в БД — "
+                        f"запитуємо AI чи це та сама фраза.\n"
+                        f"   Текст з екрану: '{last_bot_text[:120]}'"
                     )
-                    return False
+                    db_last = self.ai_agent.db.get_last_assistant_message(username)
+                    is_same = False
+                    if db_last:
+                        is_same = self.ai_agent.check_text_is_same_by_ai(
+                            screen_text=last_bot_text,
+                            db_text=db_last['content']
+                        )
+                    if is_same:
+                        # AI каже: хибна тривога — оновлюємо текст в БД і продовжуємо
+                        logger.info(
+                            f"✅ [{username}] AI підтвердив: той самий текст, "
+                            f"різниця у форматуванні. Оновлюємо БД і продовжуємо."
+                        )
+                        self.ai_agent.db.update_message_content(
+                            db_last['id'], last_bot_text
+                        )
+                    else:
+                        # AI каже: справді різні — менеджер писав вручну
+                        unanswered_check = self._filter_unanswered(user_messages, username)
+                        if unanswered_check and getattr(self.ai_agent, 'telegram', None):
+                            last_msg = unanswered_check[-1]['content']
+                            self.ai_agent.telegram.notify_manager_chat_new_message(
+                                username=username,
+                                display_name=display_name,
+                                last_message=last_msg,
+                                count=len(unanswered_check)
+                            )
+                        logger.info(
+                            f"⚠️ [{username}] AI підтвердив: менеджер писав вручну. Пропускаємо.\n"
+                            f"   Текст екрану: '{last_bot_text[:120]}'\n"
+                            f"   Текст БД:     '{(db_last['content'] if db_last else 'немає')[:120]}'"
+                        )
+                        return False
 
             # 3. Фільтруємо: тільки НЕВІДПОВІДЖЕНІ (перевірка answer_id в БД)
             unanswered = self._filter_unanswered(user_messages, username)

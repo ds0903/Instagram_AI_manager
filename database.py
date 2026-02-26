@@ -21,8 +21,9 @@ _EMOJI_RE = re.compile(
 )
 
 def _norm(text: str) -> str:
-    """Прибрати емодзі та зайві пробіли для нечіткого порівняння."""
-    return _EMOJI_RE.sub('', text or '').strip()
+    """Прибрати емодзі, нормалізувати пробіли/переноси рядків для нечіткого порівняння."""
+    no_emoji = _EMOJI_RE.sub('', text or '')
+    return re.sub(r'\s+', ' ', no_emoji).strip()
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -276,6 +277,27 @@ class Database:
             if prefix in _norm(content):
                 return True
         return False
+
+    def get_last_assistant_message(self, username: str) -> dict | None:
+        """Отримати останнє повідомлення бота з БД (id + content)."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, content FROM conversations
+                WHERE username = %s AND role = 'assistant'
+                ORDER BY created_at DESC LIMIT 1
+            """, (username,))
+            row = cur.fetchone()
+        if row:
+            return {'id': row[0], 'content': row[1]}
+        return None
+
+    def update_message_content(self, message_id: int, new_content: str):
+        """Оновити текст повідомлення в БД (для виправлення розбіжностей форматування)."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE conversations SET content = %s WHERE id = %s
+            """, (new_content, message_id))
+        self.conn.commit()
 
     def get_last_user_message_id(self, username: str) -> int:
         """Отримати ID останнього повідомлення користувача."""

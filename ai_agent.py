@@ -401,6 +401,31 @@ class AIAgent:
 
         return order_id
 
+    def check_text_is_same_by_ai(self, screen_text: str, db_text: str) -> bool:
+        """Запитати Gemini чи це один і той самий текст (різне форматування).
+        Повертає True якщо AI вважає що це один текст (хибна тривога),
+        False якщо це справді різні повідомлення."""
+        try:
+            prompt = (
+                "Порівняй два тексти нижче. Вони можуть відрізнятись пробілами, "
+                "переносами рядків, емодзі або незначними символами. "
+                "Відповідай ТІЛЬКИ одним словом: YES якщо це один і той самий текст, "
+                "NO якщо це принципово різні повідомлення.\n\n"
+                f"ТЕКСТ З ЕКРАНУ:\n{screen_text}\n\n"
+                f"ТЕКСТ З БАЗИ ДАНИХ:\n{db_text}"
+            )
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(max_output_tokens=10)
+            )
+            answer = (response.text or '').strip().upper()
+            logger.info(f"AI перевірка тексту: відповідь='{answer}'")
+            return answer.startswith('YES')
+        except Exception as e:
+            logger.warning(f"AI перевірка тексту не вдалась: {e} — вважаємо різними")
+            return False
+
     def escalate_to_human(self, username: str, display_name: str,
                           reason: str, last_message: str) -> bool:
         """Відправити повідомлення про ескалацію в Telegram."""
