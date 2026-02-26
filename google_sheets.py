@@ -38,6 +38,8 @@ class GoogleSheetsManager:
         self.client = None
         self.spreadsheet = None
         self.drive_service = None
+        # Mapping: Drive file URL → product name (populated during get_products_context_for_ai)
+        self._url_product_map: dict = {}  # {url: product_name}
 
     def _build_url(self) -> str:
         """Побудувати URL з ID таблиці"""
@@ -673,6 +675,8 @@ class GoogleSheetsManager:
                             result += "   Фото (використовуй URL з цього списку в маркерах [PHOTO:url] або [ALBUM:url1 url2 ...]):\n"
                             for f in files:
                                 result += f"     {f['path']} → {f['url']}\n"
+                                # Populate URL→product mapping for validation
+                                self._url_product_map[f['url']] = name
                         else:
                             logger.warning(f"Drive папка для '{name}': порожня або недоступна (folder_id={folder_id})")
                             result += "   Фото: папка порожня або недоступна\n"

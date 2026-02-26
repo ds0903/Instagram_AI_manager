@@ -1920,6 +1920,62 @@ class DirectHandler:
             logger.error(f"Помилка відправки повідомлення: {e}")
             return False
 
+    def _validate_photo_urls(self, urls: list, response_text: str) -> list:
+        """
+        Перевіряє, що URL фото відповідають товару, про який йдеться в response_text.
+        Якщо URL належить ІНШОМУ товару — видаляємо (не надсилаємо чужі фото).
+
+        Логіка:
+        1. Отримуємо url→product mapping з sheets_manager._url_product_map
+        2. Шукаємо назви товарів з каталогу в тексті відповіді
+        3. Якщо URL знайдено в mapping і його товар НЕ згадується в тексті — блокуємо
+        4. Якщо URL не в mapping (невідомий) — дозволяємо (безпечний fallback)
+        5. Якщо жоден товар не знайдено в тексті — дозволяємо всі (безпечний fallback)
+        """
+        if not urls:
+            return urls
+
+        sm = getattr(self.ai_agent, 'sheets_manager', None)
+        if not sm:
+            return urls
+
+        url_product_map = getattr(sm, '_url_product_map', {})
+        if not url_product_map:
+            return urls  # Map not yet built — allow all
+
+        # Find which product names appear in the response text
+        try:
+            products = sm.get_products()
+        except Exception:
+            return urls  # Can't get products — allow all
+
+        text_lower = response_text.lower()
+        mentioned_products = set()
+        for p in products:
+            name = (p.get('Назва') or p.get('Назва ', '')).strip()
+            if name and name.lower() in text_lower:
+                mentioned_products.add(name)
+
+        if not mentioned_products:
+            # No product name found in text → don't block (safety fallback)
+            return urls
+
+        valid = []
+        for url in urls:
+            owner = url_product_map.get(url)
+            if owner is None:
+                # URL not tracked → allow
+                valid.append(url)
+            elif owner in mentioned_products:
+                # URL belongs to a product mentioned in this response → allow
+                valid.append(url)
+            else:
+                logger.warning(
+                    f"🚫 Відхилено фото від '{owner}' — не відповідає продукту в повідомленні "
+                    f"(згадані: {mentioned_products}). URL: {url[:80]}"
+                )
+        return valid
+
     def send_photo(self, image_path: str) -> bool:
         """
         Відправити фото в поточний чат Instagram DM.
@@ -2677,6 +2733,9 @@ class DirectHandler:
             photo_urls = self.ai_agent._parse_photo_markers(response)
             if album_urls or photo_urls:
                 response = self.ai_agent._strip_photo_markers(response)
+            # Валідація: відхиляємо фото чужих товарів
+            album_urls = self._validate_photo_urls(album_urls, response)
+            photo_urls = self._validate_photo_urls(photo_urls, response)
 
             # 11. Зберігаємо відповідь асистента в БД (вже без маркерів)
             assistant_msg_id = self.ai_agent.db.add_assistant_message(
