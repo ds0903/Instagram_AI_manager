@@ -414,15 +414,16 @@ class AIAgent:
                     product_id_map = self.sheets_manager.get_product_id_map()
                 except Exception as e:
                     logger.warning(f"HugeProfit: не вдалося отримати product_id_map: {e}")
-            if crm.push_order(username=username, order_data=order_data,
-                              product_id_map=product_id_map):
+            if crm.push_order_with_retry(username=username, order_data=order_data,
+                                          product_id_map=product_id_map,
+                                          max_retries=3, delays=[5, 10, 15]):
                 self.db.update_lead_status(username, 'imported')
                 logger.info(f"Лід {username} → статус 'imported'")
             else:
-                logger.error(f"HugeProfit: не вдалося передати ліда {username}")
+                logger.error(f"HugeProfit: всі 3 спроби невдалі для {username}")
                 if self.telegram:
                     self.telegram.notify_error(
-                        f"❌ HugeProfit: не вдалося передати ліда\n"
+                        f"❌ HugeProfit: не вдалося передати ліда (3 спроби)\n"
                         f"👤 <b>{username}</b>\n"
                         f"📦 {order_data.get('products', '—')}\n"
                         f"💰 {order_data.get('total_price', '—')} грн"

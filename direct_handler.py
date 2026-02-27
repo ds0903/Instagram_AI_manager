@@ -2693,16 +2693,21 @@ class DirectHandler:
                                 product_id_map = self.ai_agent.sheets_manager.get_product_id_map()
                             except Exception as _e:
                                 logger.warning(f"HugeProfit: product_id_map недоступна: {_e}")
-                        ok = crm.push_order(username=username, order_data=order_data_crm,
-                                            product_id_map=product_id_map)
+                        ok = crm.push_order_with_retry(
+                            username=username,
+                            order_data=order_data_crm,
+                            product_id_map=product_id_map,
+                            max_retries=3,
+                            delays=[5, 10, 15]
+                        )
                         if ok:
                             self.ai_agent.db.update_lead_status(username, 'imported')
                             logger.info(f"HugeProfit: лід #{lead_id} передано в CRM ✓")
                         else:
-                            logger.error(f"HugeProfit: не вдалося передати лід #{lead_id}")
+                            logger.error(f"HugeProfit: всі спроби невдалі для ліда #{lead_id}")
                             if self.ai_agent.telegram:
                                 self.ai_agent.telegram.notify_error(
-                                    f"❌ HugeProfit: не вдалося передати ліда\n"
+                                    f"❌ HugeProfit: не вдалося передати ліда (3 спроби)\n"
                                     f"👤 <b>{username}</b>\n"
                                     f"📦 {order_data_crm.get('products', '—')}\n"
                                     f"💰 {order_data_crm.get('total_price', '—')} грн"

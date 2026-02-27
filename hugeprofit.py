@@ -362,6 +362,40 @@ class HugeProfitCRM:
 
     # ==================== MAIN ====================
 
+    def push_order_with_retry(self, username: str, order_data: dict,
+                               product_id_map: dict = None,
+                               max_retries: int = 3,
+                               delays: list = None) -> bool:
+        """
+        Передати замовлення в HugeProfit з повторними спробами.
+        delays: затримки між спробами в секундах (за замовчуванням [5, 10, 15]).
+        Повертає True якщо хоч одна спроба успішна, False якщо всі невдалі.
+        """
+        import time
+        if delays is None:
+            delays = [5, 10, 15]
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                ok = self.push_order(username=username, order_data=order_data,
+                                     product_id_map=product_id_map)
+                if ok:
+                    if attempt > 1:
+                        logger.info(f"HugeProfit: успішно з {attempt}-ї спроби для {username}")
+                    return True
+                else:
+                    logger.warning(f"HugeProfit: спроба {attempt}/{max_retries} невдала для {username}")
+            except Exception as e:
+                logger.error(f"HugeProfit: виняток при спробі {attempt}/{max_retries} для {username}: {e}")
+
+            if attempt < max_retries:
+                delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
+                logger.info(f"HugeProfit: чекаємо {delay}с перед спробою {attempt + 1}/{max_retries}...")
+                time.sleep(delay)
+
+        logger.error(f"HugeProfit: всі {max_retries} спроби невдалі для {username}")
+        return False
+
     def push_order(self, username: str, order_data: dict,
                    product_id_map: dict = None) -> bool:
         """
