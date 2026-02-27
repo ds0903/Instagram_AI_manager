@@ -25,7 +25,9 @@ class SessionKickedError(Exception):
 class DirectHandler:
     # Локації для перевірки непрочитаних чатів (тільки інбокс)
     DM_LOCATIONS = [
-        {'url': 'https://www.instagram.com/direct/inbox/', 'name': 'Директ'},
+        {'url': 'https://www.instagram.com/direct/inbox/',    'name': 'Директ'},
+        {'url': 'https://www.instagram.com/direct/requests/', 'name': 'Запити'},
+        {'url': 'https://www.instagram.com/direct/requests/hidden/', 'name': 'Скриті запити'},
     ]
 
     # [DEBUG] Фільтр — відповідаємо тільки цьому username (None = всім)
@@ -3161,16 +3163,13 @@ class DirectHandler:
                         logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                         continue
 
-                    # Знаходимо чати на цій сторінці (до 3 спроб якщо 0 чатів)
+                    # Знаходимо чати на цій сторінці (1 перезавантаження якщо 0 чатів)
                     found_chats = self.get_unread_chats()
                     if not found_chats:
-                        for _retry in range(2):
-                            logger.info(f"  {name}: 0 чатів, перезавантажую ({_retry + 1}/2)...")
-                            self.driver.goto(url, wait_until='domcontentloaded')
-                            time.sleep(3)
-                            found_chats = self.get_unread_chats()
-                            if found_chats:
-                                break
+                        logger.info(f"  {name}: 0 чатів, перезавантажую (1/1)...")
+                        self.driver.goto(url, wait_until='domcontentloaded')
+                        time.sleep(3)
+                        found_chats = self.get_unread_chats()
 
                     if not found_chats:
                         logger.info(f"  {name}: чатів не знайдено")
