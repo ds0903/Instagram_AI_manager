@@ -1225,13 +1225,17 @@ class DirectHandler:
                 logger.warning(f"📎 Не вдалося клікнути на пост: {e}")
                 return screenshots
 
-            time.sleep(3)
+            time.sleep(1)
 
-            # Визначаємо тип: відео чи фото
+            # Визначаємо тип: відео чи фото — перевіряємо з коротким таймаутом
             video_el = None
             try:
-                video_el = self.driver.locator("div[role='dialog'] video, article video, video").first
-                logger.info("📎 Знайдено відео в пості")
+                loc = self.driver.locator("div[role='dialog'] video, article video, video").first
+                if loc.is_visible(timeout=2000):
+                    video_el = loc
+                    logger.info("📎 Знайдено відео в пості")
+                else:
+                    logger.info("📎 Відео не знайдено, це фото-пост")
             except Exception:
                 logger.info("📎 Відео не знайдено, це фото-пост")
 
