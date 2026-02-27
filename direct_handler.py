@@ -1090,6 +1090,7 @@ class DirectHandler:
         """
         screenshots = []
         current_url = self.driver.url
+        paused = False
 
         try:
             logger.info("📖 Відкриваємо сторіз для захоплення контенту...")
@@ -1099,13 +1100,31 @@ class DirectHandler:
                 logger.warning(f"📖 Не вдалося клікнути на сторіз: {e}")
                 return screenshots
 
-            time.sleep(3)
+            time.sleep(1)
 
-            # Визначаємо тип: відео чи фото
+            # Затискаємо мишу в центрі екрану → Instagram пауза сторіз
+            # (поки mouse.down() — сторіз не рухається, є час на скріншот)
+            try:
+                vp = self.driver.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+                cx = vp['w'] // 2
+                cy = vp['h'] // 2
+                self.driver.mouse.move(cx, cy)
+                self.driver.mouse.down()
+                time.sleep(0.5)
+                paused = True
+                logger.info("📖 Сторіз на паузі (mouse down)")
+            except Exception as e:
+                logger.warning(f"📖 Не вдалося поставити паузу: {e}")
+
+            # Визначаємо тип: відео чи фото — перевіряємо з коротким таймаутом
             video_el = None
             try:
-                video_el = self.driver.locator("video").first
-                logger.info("📖 Знайдено відео в сторіз")
+                loc = self.driver.locator("video").first
+                if loc.is_visible(timeout=2000):
+                    video_el = loc
+                    logger.info("📖 Знайдено відео в сторіз")
+                else:
+                    logger.info("📖 Відео не знайдено, це фото-сторіз")
             except Exception:
                 logger.info("📖 Відео не знайдено, це фото-сторіз")
 
@@ -1137,6 +1156,12 @@ class DirectHandler:
         except Exception as e:
             logger.error(f"📖 Помилка при захопленні сторіз: {e}")
         finally:
+            # Відпускаємо мишу якщо була на паузі
+            if paused:
+                try:
+                    self.driver.mouse.up()
+                except Exception:
+                    pass
             try:
                 self.driver.keyboard.press("Escape")
                 time.sleep(1)
