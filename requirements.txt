@@ -19,3 +19,4 @@ setuptools
 pytz
 camoufox
 camoufox[geoip]
+pproxy

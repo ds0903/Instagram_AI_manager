@@ -50,6 +50,155 @@ SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 # Розмір вікна браузера
 VIEWPORT = {"width": 1400, "height": 900}
 
+# ==================== PROXY TUNNEL ====================
+
+def _run_socks_tunnel(local_port, socks_host, socks_port, socks_user, socks_pass):
+    """Локальний HTTP-проксі що тунелює через SOCKS5 з авторизацією."""
+    import socket
+    import select
+    import socks as pysocks
+
+    def forward_data(client, remote):
+        try:
+            while True:
+                readable, _, _ = select.select([client, remote], [], [], 60)
+                if not readable:
+                    break
+                for sock in readable:
+                    data = sock.recv(8192)
+                    if not data:
+                        return
+                    if sock is client:
+                        remote.sendall(data)
+                    else:
+                        client.sendall(data)
+        except Exception:
+            pass
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+            try:
+                remote.close()
+            except Exception:
+                pass
+
+    def handle_connect(client_sock, host, port):
+        """CONNECT метод (HTTPS тунель)"""
+        remote = pysocks.socksocket()
+        remote.set_proxy(pysocks.SOCKS5, socks_host, int(socks_port), True, socks_user, socks_pass)
+        remote.settimeout(30)
+        remote.connect((host, port))
+        client_sock.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
+        forward_data(client_sock, remote)
+
+    def handle_http(client_sock, method, url, rest_of_request):
+        """Звичайний HTTP запит через SOCKS5"""
+        url_str = url.decode() if isinstance(url, bytes) else url
+        if '://' in url_str:
+            url_str = url_str.split('://', 1)[1]
+        if '/' in url_str:
+            host_port, path = url_str.split('/', 1)
+            path = '/' + path
+        else:
+            host_port = url_str
+            path = '/'
+        if ':' in host_port:
+            host, port = host_port.rsplit(':', 1)
+            port = int(port)
+        else:
+            host = host_port
+            port = 80
+
+        remote = pysocks.socksocket()
+        remote.set_proxy(pysocks.SOCKS5, socks_host, int(socks_port), True, socks_user, socks_pass)
+        remote.settimeout(30)
+        remote.connect((host, port))
+
+        new_first_line = f"{method.decode()} {path} HTTP/1.1\r\n".encode()
+        remote.sendall(new_first_line + rest_of_request)
+        forward_data(client_sock, remote)
+
+    def handle_client(client_sock):
+        try:
+            request = b''
+            while b'\r\n\r\n' not in request:
+                chunk = client_sock.recv(4096)
+                if not chunk:
+                    return
+                request += chunk
+
+            first_line_end = request.index(b'\r\n')
+            first_line = request[:first_line_end]
+            parts = first_line.split(b' ')
+            method = parts[0]
+
+            if method == b'CONNECT':
+                target = parts[1].decode()
+                host, port = target.rsplit(':', 1)
+                handle_connect(client_sock, host, int(port))
+            else:
+                rest = request[first_line_end + 2:]
+                handle_http(client_sock, method, parts[1], rest)
+        except Exception:
+            pass
+        finally:
+            try:
+                client_sock.close()
+            except Exception:
+                pass
+
+    import socket as std_socket
+    server = std_socket.socket(std_socket.AF_INET, std_socket.SOCK_STREAM)
+    server.setsockopt(std_socket.SOL_SOCKET, std_socket.SO_REUSEADDR, 1)
+    server.bind(('127.0.0.1', local_port))
+    server.listen(50)
+    logger.info(f"SOCKS5-тунель запущено на 127.0.0.1:{local_port}")
+    while True:
+        try:
+            client, _ = server.accept()
+            threading.Thread(target=handle_client, args=(client,), daemon=True).start()
+        except Exception:
+            break
+
+
+def _build_proxy_for_camoufox() -> dict | None:
+    """Будує proxy dict для Camoufox. SOCKS5+auth → локальний HTTP тунель."""
+    if os.getenv('USE_PROXY', 'false').lower() != 'true':
+        return None
+
+    host     = os.getenv('PROXY_1_HOST')
+    port     = os.getenv('PROXY_1_PORT')
+    login    = os.getenv('PROXY_1_LOGIN')
+    password = os.getenv('PROXY_1_PASSWORD')
+    ptype    = os.getenv('PROXY_1_TYPE', 'socks5')
+
+    if not all([host, port, login, password]):
+        logger.warning("Проксі: не всі змінні задані в .env, пропускаємо")
+        return None
+
+    if ptype.startswith('socks') and login:
+        # Firefox/Playwright не підтримує SOCKS5+auth — запускаємо локальний тунель
+        import socket
+        with socket.socket() as s:
+            s.bind(('', 0))
+            local_port = s.getsockname()[1]
+
+        logger.info(f"Проксі: SOCKS5+auth → локальний тунель 127.0.0.1:{local_port} → {host}:{port}")
+        t = threading.Thread(
+            target=_run_socks_tunnel,
+            args=(local_port, host, port, login, password),
+            daemon=True,
+        )
+        t.start()
+        time.sleep(1)
+        return {'server': f'http://127.0.0.1:{local_port}'}
+    else:
+        logger.info(f"Проксі: {ptype}://{host}:{port}")
+        return {'server': f'{ptype}://{host}:{port}', 'username': login, 'password': password}
+
+
 # ==================== WATCHDOG (Heartbeat) ====================
 _watchdog_running = False
 _watchdog_thread = None
@@ -159,9 +308,14 @@ class InstagramBot:
             if headless is None:
                 headless = os.getenv('HEADLESS', 'false').lower() == 'true'
             logger.info(f"Запуск Camoufox (headless={headless})...")
+
+            # Проксі (SOCKS5+auth → локальний HTTP тунель)
+            proxy = _build_proxy_for_camoufox()
+
             self._camoufox = Camoufox(
                 headless=headless,
-                geoip=True,
+                proxy=proxy,
+                geoip=True if proxy else True,
                 humanize=True,
                 locale='en-US',
                 window=(VIEWPORT['width'], VIEWPORT['height']),
