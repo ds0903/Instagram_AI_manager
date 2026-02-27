@@ -168,6 +168,14 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
             """)
 
+            # Chat state - стан чатів (stale check cooldown)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chat_state (
+                    username VARCHAR(255) PRIMARY KEY,
+                    stale_checked_at TIMESTAMP NULL
+                );
+            """)
+
             # Міграція: прибираємо UNIQUE constraint на username (якщо ще є)
             cur.execute("""
                 DO $$ BEGIN
@@ -210,6 +218,7 @@ class Database:
                          display_name: str = None,
                          message_timestamp: datetime = None) -> int:
         """Додати повідомлення від користувача."""
+        self.reset_stale_checked(username)
         return self.add_message(
             username=username,
             role='user',
@@ -280,7 +289,8 @@ class Database:
 
     def get_stale_bot_chats(self, timeout_minutes: int) -> list[str]:
         """Повернути список username де остання повідомлення = assistant
-        і пройшло більше timeout_minutes хвилин — треба перевірити чи не прийшло нове."""
+        і пройшло більше timeout_minutes хвилин — треба перевірити чи не прийшло нове.
+        Пропускає чати де stale_checked_at < timeout_minutes хвилин тому (cooldown)."""
         with self.conn.cursor() as cur:
             cur.execute("""
                 SELECT c.username
@@ -290,11 +300,32 @@ class Database:
                     FROM conversations
                     GROUP BY username
                 ) latest ON c.username = latest.username AND c.created_at = latest.last_at
+                LEFT JOIN chat_state cs ON cs.username = c.username
                 WHERE c.role = 'assistant'
                   AND c.created_at < NOW() - INTERVAL '%s minutes'
-            """ % int(timeout_minutes))
+                  AND (cs.stale_checked_at IS NULL
+                       OR cs.stale_checked_at < NOW() - INTERVAL '%s minutes')
+            """ % (int(timeout_minutes), int(timeout_minutes)))
             rows = cur.fetchall()
         return [row[0] for row in rows]
+
+    def mark_stale_checked(self, username: str):
+        """Позначити що stale чат перевірено — cooldown до наступної перевірки."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO chat_state (username, stale_checked_at)
+                VALUES (%s, NOW())
+                ON CONFLICT (username) DO UPDATE SET stale_checked_at = NOW()
+            """, (username,))
+
+    def reset_stale_checked(self, username: str):
+        """Скинути cooldown — клієнт написав нове повідомлення."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO chat_state (username, stale_checked_at)
+                VALUES (%s, NULL)
+                ON CONFLICT (username) DO UPDATE SET stale_checked_at = NULL
+            """, (username,))
 
     def get_last_assistant_message(self, username: str) -> dict | None:
         """Отримати останнє повідомлення бота з БД (id + content)."""
