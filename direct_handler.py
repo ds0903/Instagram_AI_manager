@@ -163,26 +163,71 @@ class DirectHandler:
 
     def _click_hidden_requests_btn(self) -> bool:
         """Натискає кнопку 'Скриті запити' через клік (без URL goto).
-        Спочатку повертається на сторінку Запити, потім натискає кнопку."""
+        Якщо ще не на сторінці Запити — переходить, потім натискає кнопку."""
         try:
-            # Повертаємось на сторінку Запити
-            link = self.driver.locator("a[href='/direct/requests/']").first
-            if link.is_visible(timeout=5000):
-                link.click()
+            # Якщо не на сторінці запитів — переходимо туди
+            current_url = self.driver.url
+            if '/direct/requests/' not in current_url or 'hidden' in current_url:
+                link = self.driver.locator("a[href='/direct/requests/']").first
+                if link.is_visible():
+                    link.click()
+                else:
+                    self.go_to_location('https://www.instagram.com/direct/requests/')
                 time.sleep(2)
 
-            # Шукаємо кнопку Скриті запити (3 мови)
-            btn = None
-            for text in ['Скрытые запросы', 'Скриті запити', 'Hidden requests']:
-                loc = self.driver.locator(
-                    f"xpath=//div[@role='button'][.//span[text()='{text}']]"
-                ).first
-                if loc.is_visible(timeout=2000):
-                    btn = loc
-                    break
+            # Шукаємо кнопку Скриті запити — пробуємо кілька стратегій
+            clicked = False
 
-            if btn:
-                btn.click()
+            # Стратегія 1: CSS :has-text() (надійніший за XPath text())
+            for text in ['Скрытые запросы', 'Скриті запити', 'Hidden requests']:
+                try:
+                    el = self.driver.wait_for_selector(
+                        f"div[role='button']:has-text('{text}')",
+                        timeout=2000
+                    )
+                    if el:
+                        logger.info(f"Знайдено кнопку Скриті запити по тексту: '{text}'")
+                        el.click()
+                        clicked = True
+                        break
+                except PlaywrightTimeoutError:
+                    continue
+
+            # Стратегія 2: SVG aria-label (мово-незалежний через кілька мов)
+            if not clicked:
+                for label in [
+                    'Значок перечеркнутого глаза для скрытых запросов',
+                    'Значок перекресленого ока для прихованих запитів',
+                    'Hidden requests crossed eye icon',
+                ]:
+                    try:
+                        el = self.driver.wait_for_selector(
+                            f"xpath=//div[@role='button'][.//svg[@aria-label='{label}']]",
+                            timeout=1000
+                        )
+                        if el:
+                            logger.info(f"Знайдено кнопку по SVG aria-label: '{label}'")
+                            el.click()
+                            clicked = True
+                            break
+                    except PlaywrightTimeoutError:
+                        continue
+
+            # Стратегія 3: SVG path перечеркнутого ока (мово-незалежний)
+            if not clicked:
+                try:
+                    el = self.driver.wait_for_selector(
+                        "xpath=//div[@role='button'][.//path[starts-with(@d, 'M2.936')]]",
+                        timeout=2000
+                    )
+                    if el:
+                        logger.info("Знайдено кнопку Скриті запити по SVG path")
+                        el.click()
+                        clicked = True
+                except PlaywrightTimeoutError:
+                    pass
+
+            if clicked:
                 time.sleep(2)
                 self._dismiss_popups()
                 try:
@@ -195,7 +240,7 @@ class DirectHandler:
                 logger.info("Відкрито: Скриті запити (click)")
                 return True
             else:
-                logger.warning("Кнопка Скриті запити не знайдена, fallback goto")
+                logger.warning("Кнопка Скриті запити не знайдена жодною стратегією, fallback goto")
                 return self.go_to_location('https://www.instagram.com/direct/requests/hidden/')
         except SessionKickedError:
             raise
