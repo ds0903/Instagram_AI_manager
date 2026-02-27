@@ -491,6 +491,43 @@ class Database:
             interested_products=interested_products, notes=notes
         )
 
+    def add_manager_message(self, username: str, content: str, display_name: str = None) -> int:
+        """Зберегти факт ручного запису менеджера в conversations (role='manager').
+        Використовується для дедублікації Telegram-сповіщень між рестартами бота."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO conversations (username, role, content, display_name)
+                VALUES (%s, 'manager', %s, %s)
+                RETURNING id
+            """, (username, content, display_name))
+            return cur.fetchone()[0]
+
+    def was_manager_already_notified(self, username: str, content: str) -> bool:
+        """Перевірити чи вже надсилали сповіщення про це ручне повідомлення менеджера.
+        True якщо: є role='manager' з таким самим content І після нього немає нових role='user'."""
+        with self.conn.cursor() as cur:
+            # Знаходимо останній запис role='manager' з цим текстом
+            cur.execute("""
+                SELECT id, created_at FROM conversations
+                WHERE username = %s AND role = 'manager' AND content = %s
+                ORDER BY created_at DESC LIMIT 1
+            """, (username, content))
+            mgr = cur.fetchone()
+            if not mgr:
+                return False  # Ще не записували → ще не повідомляли
+            mgr_id, mgr_at = mgr
+
+            # Перевіряємо чи є нові user-повідомлення ПІСЛЯ цього запису менеджера
+            cur.execute("""
+                SELECT 1 FROM conversations
+                WHERE username = %s AND role = 'user' AND created_at > %s
+                LIMIT 1
+            """, (username, mgr_at))
+            has_new_user = cur.fetchone() is not None
+
+            # Якщо нові user-повідомлення є → клієнт написав → потрібно знову відслідковувати
+            return not has_new_user
+
     def get_lead(self, username: str) -> dict:
         """Отримати останнього ліда за username."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:

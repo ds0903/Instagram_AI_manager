@@ -2416,20 +2416,29 @@ class DirectHandler:
                         )
                     else:
                         # AI каже: справді різні — менеджер писав вручну
-                        unanswered_check = self._filter_unanswered(user_messages, username)
-                        if unanswered_check and getattr(self.ai_agent, 'telegram', None):
-                            last_msg = unanswered_check[-1]['content']
-                            self.ai_agent.telegram.notify_manager_chat_new_message(
-                                username=username,
-                                display_name=display_name,
-                                last_message=last_msg,
-                                count=len(unanswered_check)
+                        # Перевіряємо в БД (через conversations role='manager') чи вже повідомляли
+                        already_notified = self.ai_agent.db.was_manager_already_notified(username, last_bot_text)
+                        if not already_notified:
+                            unanswered_check = self._filter_unanswered(user_messages, username)
+                            if unanswered_check and getattr(self.ai_agent, 'telegram', None):
+                                last_msg = unanswered_check[-1]['content']
+                                self.ai_agent.telegram.notify_manager_chat_new_message(
+                                    username=username,
+                                    display_name=display_name,
+                                    last_message=last_msg,
+                                    count=len(unanswered_check)
+                                )
+                            # Зберігаємо в conversations role='manager' — захист від повторів і після рестарту
+                            self.ai_agent.db.add_manager_message(username, last_bot_text, display_name)
+                            logger.info(
+                                f"⚠️ [{username}] Менеджер писав вручну — повідомлено, збережено в БД.\n"
+                                f"   Текст екрану: '{last_bot_text[:120]}'\n"
+                                f"   Текст БД:     '{(db_last['content'] if db_last else 'немає')[:120]}'"
                             )
-                        logger.info(
-                            f"⚠️ [{username}] AI підтвердив: менеджер писав вручну. Пропускаємо.\n"
-                            f"   Текст екрану: '{last_bot_text[:120]}'\n"
-                            f"   Текст БД:     '{(db_last['content'] if db_last else 'немає')[:120]}'"
-                        )
+                        else:
+                            logger.info(
+                                f"⏭️ [{username}] Менеджер вручну (вже повідомлено, немає нових від клієнта). Пропускаємо."
+                            )
                         return False
 
             # 3. Фільтруємо: тільки НЕВІДПОВІДЖЕНІ (перевірка answer_id в БД)
@@ -2587,6 +2596,9 @@ class DirectHandler:
                 )
                 user_msg_ids.append(msg_id)
                 logger.info(f"Збережено user message id={msg_id}")
+
+            # (скидання флагу 'менеджер вручну' відбувається автоматично —
+            #  was_manager_already_notified перевіряє чи є нові user-повідомлення після manager-запису)
 
             # 6. (Лід створюється тільки при підтвердженні замовлення — в _process_order)
 
