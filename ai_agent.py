@@ -252,6 +252,9 @@ class AIAgent:
                     data['products'] = value
                 elif key in ('сума', 'total', 'ціна'):
                     data['total_price'] = value
+                elif key in ('тип', 'type'):
+                    # 'Допродаж' або 'Продаж' — AI сама вказує
+                    data['sale_type'] = value.strip()
 
         if data.get('full_name') or data.get('phone'):
             logger.info(f"[LEAD_READY] розпізнано: {data}")

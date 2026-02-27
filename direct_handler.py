@@ -2673,11 +2673,10 @@ class DirectHandler:
                     addr_parts.append(f"відд. {lead_ready_data['nova_poshta']}")
                 delivery_address = ', '.join(addr_parts) if addr_parts else None
 
-                # Перевіряємо — перший лід чи допродаж (рахуємо тільки за останні 4 год)
-                # Якщо вже є лід в поточній сесії (4 год) → це допродаж який ми запропонували
-                # Якщо 0 → це новий продаж (навіть якщо клієнт вже колись замовляв)
-                existing_leads_count = self.ai_agent.db.count_leads_recent(username, hours=4)
-                is_upsell = existing_leads_count > 0
+                # Визначаємо тип: AI вказує "Тип: Допродаж" в [LEAD_READY] тільки якщо вона сама ініціювала
+                # Якщо клієнт сам прийшов → AI не пише Тип → це завжди Продаж
+                sale_type_raw = (lead_ready_data.get('sale_type') or '').strip().lower()
+                is_upsell = 'допродаж' in sale_type_raw
 
                 lead_note = 'Допродаж' if is_upsell else 'Продаж'
                 lead_id = self.ai_agent.db.create_lead(
