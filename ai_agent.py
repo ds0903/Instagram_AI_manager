@@ -309,10 +309,47 @@ class AIAgent:
             logger.info(f"Знайдено ALBUM з {len(urls)} фото")
         return urls
 
+    def _parse_photo_request_markers(self, response: str) -> list:
+        """
+        Парсинг маркерів [PHOTO_REQUEST:product/category/color] з відповіді AI.
+        Повертає список (product, category, color) для lazy Drive lookup.
+        """
+        raw = re.findall(r'\[PHOTO_REQUEST:([^\]]+)\]', response)
+        result = []
+        for item in raw:
+            parts = item.split('/', 2)
+            product = parts[0].strip() if len(parts) > 0 else ''
+            category = parts[1].strip() if len(parts) > 1 else 'root'
+            color = parts[2].strip() if len(parts) > 2 else ''
+            result.append((product, category, color))
+        if result:
+            logger.info(f"Знайдено {len(result)} PHOTO_REQUEST: {result}")
+        return result
+
+    def _parse_album_request_markers(self, response: str) -> list:
+        """
+        Парсинг маркерів [ALBUM_REQUEST:product/category/color1 color2 color3].
+        Повертає список (product, category, [color1, color2, ...]).
+        """
+        raw = re.findall(r'\[ALBUM_REQUEST:([^\]]+)\]', response)
+        result = []
+        for item in raw:
+            parts = item.split('/', 2)
+            product = parts[0].strip() if len(parts) > 0 else ''
+            category = parts[1].strip() if len(parts) > 1 else 'root'
+            colors_raw = parts[2].strip() if len(parts) > 2 else ''
+            colors = [c.strip() for c in re.split(r'[\s,]+', colors_raw) if c.strip()]
+            result.append((product, category, colors))
+        if result:
+            logger.info(f"Знайдено {len(result)} ALBUM_REQUEST: {result}")
+        return result
+
     def _strip_photo_markers(self, response: str) -> str:
-        """Видалити маркери [PHOTO:...] та [ALBUM:...] з тексту відповіді (клієнт не бачить)."""
+        """Видалити всі фото-маркери з тексту відповіді (клієнт не бачить)."""
         response = re.sub(r'\s*\[PHOTO:https?://[^\]]+\]', '', response)
         response = re.sub(r'\s*\[ALBUM:.*?\]', '', response, flags=re.DOTALL)
+        response = re.sub(r'\s*\[PHOTO_REQUEST:[^\]]+\]', '', response)
+        response = re.sub(r'\s*\[ALBUM_REQUEST:[^\]]+\]', '', response)
         return response.strip()
 
     def get_product_photo_url(self, product_name: str) -> str:

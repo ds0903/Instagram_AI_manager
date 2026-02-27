@@ -38,8 +38,12 @@ class GoogleSheetsManager:
         self.client = None
         self.spreadsheet = None
         self.drive_service = None
-        # Mapping: Drive file URL → product name (populated during get_products_context_for_ai)
+        # Mapping: Drive file URL → product name (populated during resolve_photo_request)
         self._url_product_map: dict = {}  # {url: product_name}
+        # Mapping: product name → Drive folder_id (populated during get_products_context_for_ai)
+        self._product_drive_folder: dict = {}  # {product_name: folder_id}
+        # Cache: folder_id → list of files (to avoid re-listing same folder)
+        self._drive_folder_cache: dict = {}  # {folder_id: [file_dicts]}
 
     def _build_url(self) -> str:
         """Побудувати URL з ID таблиці"""
@@ -607,6 +611,117 @@ class GoogleSheetsManager:
         logger.info(f"Товар '{product_name}' не знайдено для фото")
         return None
 
+    def resolve_photo_request(self, product_name: str, category: str, color: str) -> str | None:
+        """
+        Lazy Drive lookup: знаходить URL фото для конкретного товару/категорії/кольору.
+        Викликається ТІЛЬКИ при відправці фото (не при побудові system prompt).
+
+        product_name: назва товару (напр. 'Костюм "Харпер"')
+        category:     підпапка (Дівчинка/Хлопчик/Підліток/Дорослі/root/'')
+        color:        назва кольору (Шоколадний/Чорний/...)
+
+        Returns: URL або None
+        """
+        # Знайти folder_id для товару
+        folder_id = self._product_drive_folder.get(product_name)
+        if not folder_id:
+            # Пробуємо fuzzy-пошук по назві товару
+            name_lower = product_name.lower().strip().strip('"\'«»')
+            for pname, fid in self._product_drive_folder.items():
+                if name_lower in pname.lower() or pname.lower().strip('"\'«»') in name_lower:
+                    folder_id = fid
+                    break
+        if not folder_id:
+            logger.warning(f"resolve_photo_request: folder_id не знайдено для '{product_name}'")
+            return None
+
+        # Lazy listing з кешем (не лістуємо двічі ту саму папку за сесію)
+        if folder_id not in self._drive_folder_cache:
+            files = self.list_folder_files(folder_id)
+            self._drive_folder_cache[folder_id] = files
+            # Також заповнюємо _url_product_map для валідації фото
+            for f in files:
+                self._url_product_map[f['url']] = product_name
+            logger.info(f"Drive: закешовано {len(files)} файлів для '{product_name}'")
+        else:
+            files = self._drive_folder_cache[folder_id]
+
+        if not files:
+            return None
+
+        cat_lower = (category or '').strip().lower()
+        color_lower = (color or '').strip().lower()
+        is_root = cat_lower in ('root', '', 'none')
+
+        # Фільтруємо кандидатів: підходяща категорія, не Розмірна сітка
+        candidates = []
+        for f in files:
+            path = f['path']  # напр. "Дівчинка/Шоколадний.jpg"
+            parts = path.split('/')
+            if len(parts) == 1:
+                file_cat = 'root'
+                file_name = parts[0]
+            else:
+                file_cat = parts[0].lower()
+                file_name = parts[-1]
+            if 'розмірна сітка' in file_cat:
+                continue
+            # Категорія
+            if is_root:
+                if file_cat != 'root':
+                    continue
+            else:
+                if file_cat != cat_lower:
+                    continue
+            # Колір — ім'я файлу без розширення містить колір (або навпаки)
+            name_no_ext = file_name.rsplit('.', 1)[0].lower()
+            if color_lower and (color_lower in name_no_ext or name_no_ext.startswith(color_lower)):
+                candidates.append(f)
+
+        if not candidates and not is_root:
+            # Fallback: шукаємо в будь-якій категорії
+            for f in files:
+                path = f['path']
+                parts = path.split('/')
+                file_name = parts[-1]
+                if 'розмірна сітка' in path.lower():
+                    continue
+                name_no_ext = file_name.rsplit('.', 1)[0].lower()
+                if color_lower and (color_lower in name_no_ext or name_no_ext.startswith(color_lower)):
+                    candidates.append(f)
+
+        if not candidates:
+            # Останній fallback: перше фото не з розмірної сітки
+            for f in files:
+                if 'розмірна сітка' not in f['path'].lower():
+                    if is_root and '/' not in f['path']:
+                        candidates.append(f)
+                        break
+                    elif not is_root and f['path'].lower().startswith(cat_lower + '/'):
+                        candidates.append(f)
+                        break
+
+        if candidates:
+            url = candidates[0]['url']
+            logger.info(f"resolve_photo_request: '{product_name}/{category}/{color}' → {url[:80]}")
+            return url
+
+        logger.warning(f"resolve_photo_request: файл не знайдено для '{product_name}/{category}/{color}'")
+        return None
+
+    def resolve_album_request(self, product_name: str, category: str, colors: list) -> list:
+        """
+        Lazy Drive lookup для альбому: повертає список URL для кількох кольорів.
+        """
+        urls = []
+        seen = set()
+        for color in colors:
+            url = self.resolve_photo_request(product_name, category, color.strip())
+            if url and url not in seen:
+                urls.append(url)
+                seen.add(url)
+        return urls
+
     # ==================== КОНТЕКСТ ДЛЯ AI ====================
 
     def get_products_context_for_ai(self, query: str = None) -> str:
@@ -660,26 +775,26 @@ class GoogleSheetsManager:
             if note:
                 result += f"   Примітка: {note}\n"
 
-            # Фото — або папка Drive (listуємо файли) або звичайні URL
+            # Фото — НЕ йдемо в Drive тут. Drive викликається ЛИШЕ при відправці фото.
             photo_raw = (
                 p.get('Фото URL') or p.get('Фото') or
                 p.get('Фото URL ') or p.get('Photo URL') or ''
             ).strip()
             if photo_raw:
                 if self.is_drive_folder_url(photo_raw):
+                    # Зберігаємо folder_id для lazy-resolve
                     folder_id = self.extract_drive_folder_id(photo_raw)
                     if folder_id:
-                        files = self.list_folder_files(folder_id)
-                        if files:
-                            logger.info(f"Drive папка для '{name}': знайдено {len(files)} файлів: {[f['path'] for f in files]}")
-                            result += "   Фото (використовуй URL з цього списку в маркерах [PHOTO:url] або [ALBUM:url1 url2 ...]):\n"
-                            for f in files:
-                                result += f"     {f['path']} → {f['url']}\n"
-                                # Populate URL→product mapping for validation
-                                self._url_product_map[f['url']] = name
-                        else:
-                            logger.warning(f"Drive папка для '{name}': порожня або недоступна (folder_id={folder_id})")
-                            result += "   Фото: папка порожня або недоступна\n"
+                        self._product_drive_folder[name] = folder_id
+                        result += (
+                            f"   Фото файли: є Drive папка.\n"
+                            f"     Щоб показати фото постав маркер:\n"
+                            f"     [PHOTO_REQUEST:{name}/категорія/колір]\n"
+                            f"     де «категорія» = Дівчинка / Хлопчик / Підліток / Дорослі / root\n"
+                            f"     (обирай залежно від стать/вік клієнта; «root» якщо невідомо)\n"
+                            f"     «колір» — точно з поля «Кольори» цього товару.\n"
+                            f"     Для альбому: [ALBUM_REQUEST:{name}/категорія/колір1 колір2 колір3]\n"
+                        )
                     else:
                         result += f"   Фото: {photo_raw}\n"
                 else:

@@ -2740,12 +2740,35 @@ class DirectHandler:
                 response = _re.sub(r'\[SAVE_QUESTION:.*?\]', '', response).strip()
 
             # 10.5. Парсимо фото маркери
-            # [PHOTO:url] — одне фото (конкретний колір)
-            # [ALBUM:url1 url2 url3] — всі кольори одним альбомом
-            album_urls = self.ai_agent._parse_album_marker(response)
-            photo_urls = self.ai_agent._parse_photo_markers(response)
-            if album_urls or photo_urls:
+            # [PHOTO:url] / [ALBUM:url1 url2] — прямі URL (legacy, якщо AI дасть URL)
+            # [PHOTO_REQUEST:product/category/color] — lazy Drive lookup (нова схема)
+            # [ALBUM_REQUEST:product/category/color1 color2] — lazy album
+            album_urls  = self.ai_agent._parse_album_marker(response)
+            photo_urls  = self.ai_agent._parse_photo_markers(response)
+            photo_reqs  = self.ai_agent._parse_photo_request_markers(response)
+            album_reqs  = self.ai_agent._parse_album_request_markers(response)
+
+            # Резолвимо PHOTO_REQUEST → URL (тут іде Drive, але ТІЛЬКИ якщо AI просить фото)
+            sm = getattr(self.ai_agent, 'sheets_manager', None)
+            if sm and photo_reqs:
+                for (prod, cat, col) in photo_reqs:
+                    url = sm.resolve_photo_request(prod, cat, col)
+                    if url:
+                        photo_urls.append(url)
+                    else:
+                        logger.warning(f"PHOTO_REQUEST не розв'язано: {prod}/{cat}/{col}")
+
+            if sm and album_reqs:
+                for (prod, cat, cols) in album_reqs:
+                    urls = sm.resolve_album_request(prod, cat, cols)
+                    if urls:
+                        album_urls.extend(urls)
+                    else:
+                        logger.warning(f"ALBUM_REQUEST не розв'язано: {prod}/{cat}/{cols}")
+
+            if album_urls or photo_urls or photo_reqs or album_reqs:
                 response = self.ai_agent._strip_photo_markers(response)
+
             # Валідація: відхиляємо фото чужих товарів
             album_urls = self._validate_photo_urls(album_urls, response)
             photo_urls = self._validate_photo_urls(photo_urls, response)
