@@ -2630,6 +2630,39 @@ class DirectHandler:
             import re as _re
             lead_ready_data = self.ai_agent._parse_lead_ready(response)
             if lead_ready_data:
+                # Замінюємо заглушки реальними даними з БД
+                # (AI іноді пише "(номер з попереднього замовлення)" замість реального номера)
+                def _is_placeholder(val: str) -> bool:
+                    if not val:
+                        return True
+                    v = val.strip()
+                    return v.startswith('(') or 'попереднього' in v.lower() or 'замовлення' in v.lower()
+
+                if _is_placeholder(lead_ready_data.get('phone')) or \
+                   _is_placeholder(lead_ready_data.get('full_name')) or \
+                   _is_placeholder(lead_ready_data.get('city')) or \
+                   _is_placeholder(lead_ready_data.get('nova_poshta')):
+                    prev_lead = self.ai_agent.db.get_lead(username)
+                    if prev_lead:
+                        if _is_placeholder(lead_ready_data.get('phone')) and prev_lead.get('phone'):
+                            logger.info(f"Замінюємо placeholder телефону → {prev_lead['phone']}")
+                            lead_ready_data['phone'] = prev_lead['phone']
+                        if _is_placeholder(lead_ready_data.get('full_name')) and prev_lead.get('display_name'):
+                            logger.info(f"Замінюємо placeholder ПІБ → {prev_lead['display_name']}")
+                            lead_ready_data['full_name'] = prev_lead['display_name']
+                        if _is_placeholder(lead_ready_data.get('city')) and prev_lead.get('city'):
+                            logger.info(f"Замінюємо placeholder міста → {prev_lead['city']}")
+                            lead_ready_data['city'] = prev_lead['city']
+                        if _is_placeholder(lead_ready_data.get('nova_poshta')):
+                            # Беремо НП з delivery_address: "ПІБ, місто, відд. X"
+                            addr = prev_lead.get('delivery_address') or ''
+                            np_match = _re.search(r'відд\.\s*(\S+)', addr)
+                            if np_match:
+                                logger.info(f"Замінюємо placeholder НП → {np_match.group(1)}")
+                                lead_ready_data['nova_poshta'] = np_match.group(1)
+                    else:
+                        logger.warning(f"Placeholder в [LEAD_READY] для {username}, але попередній лід не знайдено в БД")
+
                 # Збираємо delivery_address: "ПІБ, місто, відд. X"
                 addr_parts = []
                 if lead_ready_data.get('full_name'):
