@@ -390,12 +390,20 @@ class AIAgent:
         logger.info(f"Замовлення #{order_id} підтверджено для {username}")
 
         # Передаємо замовлення в HugeProfit CRM
-        # Якщо лід вже 'imported' (тобто [LEAD_READY] вже відправив) — пропускаємо дублікат.
-        # Але якщо лід НЕ imported (напр. [LEAD_READY] не спрацював) — відправляємо як fallback.
+        # Якщо лід вже 'imported' з ТИМИ САМИМИ товарами — пропускаємо дублікат.
+        # Якщо клієнт замовляє ІНШИЙ товар (нове замовлення після закритого) — відправляємо.
         existing_lead = self.db.get_lead(username)
         if existing_lead and existing_lead.get('status') == 'imported':
-            logger.info(f"HugeProfit: лід {username} вже imported — пропускаємо дублікат при [ORDER]")
-            return order_id
+            existing_products = (existing_lead.get('interested_products') or '').strip()
+            current_products = (order_data.get('products') or '').strip()
+            if existing_products and current_products and existing_products == current_products:
+                logger.info(f"HugeProfit: лід {username} вже imported з тими самими товарами — пропускаємо дублікат при [ORDER]")
+                return order_id
+            else:
+                logger.info(
+                    f"HugeProfit: [ORDER] для {username} містить нові товари "
+                    f"(старі: '{existing_products[:50]}', нові: '{current_products[:50]}') — відправляємо"
+                )
         try:
             from hugeprofit import HugeProfitCRM
             crm = HugeProfitCRM()
