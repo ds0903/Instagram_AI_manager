@@ -135,6 +135,74 @@ class DirectHandler:
         """Перехід в Direct inbox (зворотна сумісність)."""
         return self.go_to_location('https://www.instagram.com/direct/inbox/')
 
+    def _click_requests_link(self) -> bool:
+        """Натискає посилання 'Запити' через клік (без URL goto)."""
+        try:
+            link = self.driver.locator("a[href='/direct/requests/']").first
+            if link.is_visible(timeout=5000):
+                link.click()
+                time.sleep(2)
+                self._dismiss_popups()
+                try:
+                    self.driver.wait_for_selector(
+                        "xpath=//div[@role='listitem'] | //div[@role='button'][@tabindex='0']",
+                        timeout=8000
+                    )
+                except PlaywrightTimeoutError:
+                    logger.info("Запити: чатів не знайдено (сторінка порожня)")
+                logger.info("Відкрито: Запити (click)")
+                return True
+            else:
+                logger.warning("Посилання Запити не знайдено, fallback goto")
+                return self.go_to_location('https://www.instagram.com/direct/requests/')
+        except SessionKickedError:
+            raise
+        except Exception as e:
+            logger.error(f"Помилка _click_requests_link: {e}")
+            return self.go_to_location('https://www.instagram.com/direct/requests/')
+
+    def _click_hidden_requests_btn(self) -> bool:
+        """Натискає кнопку 'Скриті запити' через клік (без URL goto).
+        Спочатку повертається на сторінку Запити, потім натискає кнопку."""
+        try:
+            # Повертаємось на сторінку Запити
+            link = self.driver.locator("a[href='/direct/requests/']").first
+            if link.is_visible(timeout=5000):
+                link.click()
+                time.sleep(2)
+
+            # Шукаємо кнопку Скриті запити (3 мови)
+            btn = None
+            for text in ['Скрытые запросы', 'Скриті запити', 'Hidden requests']:
+                loc = self.driver.locator(
+                    f"xpath=//div[@role='button'][.//span[text()='{text}']]"
+                ).first
+                if loc.is_visible(timeout=2000):
+                    btn = loc
+                    break
+
+            if btn:
+                btn.click()
+                time.sleep(2)
+                self._dismiss_popups()
+                try:
+                    self.driver.wait_for_selector(
+                        "xpath=//div[@role='listitem'] | //div[@role='button'][@tabindex='0']",
+                        timeout=8000
+                    )
+                except PlaywrightTimeoutError:
+                    logger.info("Скриті запити: чатів не знайдено (сторінка порожня)")
+                logger.info("Відкрито: Скриті запити (click)")
+                return True
+            else:
+                logger.warning("Кнопка Скриті запити не знайдена, fallback goto")
+                return self.go_to_location('https://www.instagram.com/direct/requests/hidden/')
+        except SessionKickedError:
+            raise
+        except Exception as e:
+            logger.error(f"Помилка _click_hidden_requests_btn: {e}")
+            return self.go_to_location('https://www.instagram.com/direct/requests/hidden/')
+
     def get_unread_chats(self) -> list:
         """
         Отримати непрочитані чати на поточній сторінці.
@@ -3202,13 +3270,22 @@ class DirectHandler:
                     heartbeat(f"Перевірка: {name}")
                     logger.info(f"Перевіряю: {name} ({url})")
 
-                    if not self.go_to_location(url):
+                    # Навігація: Директ — goto, Запити/Скриті запити — click-based
+                    if name == 'Запити':
+                        ok = self._click_requests_link()
+                    elif name == 'Скриті запити':
+                        ok = self._click_hidden_requests_btn()
+                    else:
+                        ok = self.go_to_location(url)
+
+                    if not ok:
                         logger.warning(f"Не вдалося відкрити {name}, пропускаю")
                         continue
 
-                    # Знаходимо чати на цій сторінці (1 перезавантаження якщо 0 чатів)
+                    # Знаходимо чати на цій сторінці
+                    # Перезавантаження тільки для Директ (для Запити/Скриті запити не потрібне)
                     found_chats = self.get_unread_chats()
-                    if not found_chats:
+                    if not found_chats and name == 'Директ':
                         logger.info(f"  {name}: 0 чатів, перезавантажую (1/1)...")
                         self.driver.goto(url, wait_until='domcontentloaded')
                         time.sleep(3)
