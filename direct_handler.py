@@ -701,10 +701,6 @@ class DirectHandler:
                     image_url = story_data.get('imageUrl', '')
                     story_text = story_data.get('storyText', '')
 
-                    # Пропускаємо сторіз нашого бота
-                    if story_author.lower() == self.bot_username:
-                        continue
-
                     # Дедуплікація
                     dedup_key = f"story:{story_author}"
                     if dedup_key in seen_stories:
@@ -715,9 +711,15 @@ class DirectHandler:
                     is_from_user = True
                     y = (story_el.bounding_box() or {}).get('y', 0)
 
-                    content = f"[Сторіз від @{story_author}]"
-                    if story_text:
-                        content += f": {story_text}"
+                    # Якщо автор сторіз — наш бот, це клієнт відповідає на нашу сторіз
+                    if story_author.lower() == self.bot_username:
+                        content = "[Клієнт відповів на нашу сторіз]"
+                        if story_text:
+                            content += f": {story_text}"
+                    else:
+                        content = f"[Сторіз від @{story_author}]"
+                        if story_text:
+                            content += f": {story_text}"
 
                     all_messages.append({
                         'content': content,
@@ -821,10 +823,6 @@ class DirectHandler:
                     post_author = post_data.get('postAuthor', '')
                     caption = post_data.get('caption', '')
 
-                    # Пропускаємо лінк нашого бота
-                    if post_author.lower() == self.bot_username:
-                        continue
-
                     # Дедуплікація: один і той же пост — один запис
                     dedup_key = f"{post_author}:{caption[:50]}"
                     if dedup_key in seen_captions:
@@ -835,7 +833,11 @@ class DirectHandler:
                     is_from_user = True
                     y = (link_el.bounding_box() or {}).get('y', 0)
 
-                    content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
+                    # Якщо автор поста — наш бот, це клієнт переслав наш пост
+                    if post_author.lower() == self.bot_username:
+                        content = f"[Клієнт переслав наш пост]: {caption}" if caption else "[Клієнт переслав наш пост]"
+                    else:
+                        content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
 
                     all_messages.append({
                         'content': content,
