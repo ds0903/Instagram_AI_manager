@@ -2661,15 +2661,17 @@ class DirectHandler:
                 return False
 
             # 10. Парсимо замовлення з відповіді AI (якщо є [ORDER]...[/ORDER])
-            order_data = self.ai_agent._parse_order(response)
-            if order_data:
-                self.ai_agent._process_order(
-                    username=username,
-                    display_name=display_name,
-                    order_data=order_data
-                )
-                # Видаляємо блок [ORDER] з тексту — клієнт не бачить
-                response = self.ai_agent._strip_order_block(response)
+            # Якщо є [LEAD_READY] — пропускаємо [ORDER]: все вже обробляється через [LEAD_READY]
+            if '[LEAD_READY]' not in response:
+                order_data = self.ai_agent._parse_order(response)
+                if order_data:
+                    self.ai_agent._process_order(
+                        username=username,
+                        display_name=display_name,
+                        order_data=order_data
+                    )
+            # Стрипаємо [ORDER] завжди — клієнт не повинен бачити
+            response = self.ai_agent._strip_order_block(response)
 
             # 10.1. Парсимо [LEAD_READY] — всі контактні дані зібрані, створюємо ліда
             import re as _re
