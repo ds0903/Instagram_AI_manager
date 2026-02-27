@@ -246,6 +246,7 @@ class Database:
                 SELECT id, username, role, content, created_at, display_name, answer_id, message_timestamp
                 FROM conversations
                 WHERE username = %s
+                  AND role IN ('user', 'assistant')
                 ORDER BY created_at DESC
                 LIMIT %s
             """, (username, limit))

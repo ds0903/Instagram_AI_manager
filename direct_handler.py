@@ -2766,6 +2766,12 @@ class DirectHandler:
             # Завжди стрипаємо [LEAD_READY] навіть якщо парсинг не спрацював — клієнт не повинен бачити маркери
             response = self.ai_agent._strip_lead_ready_block(response)
 
+            # Зберігаємо версію відповіді для DB — БЕЗ фото/контакт маркерів, але [LEAD_READY] вже вистриплений вище.
+            # Щоб AI бачив в историї що лід вже зафіксовано — додаємо мітку якщо лід щойно створився.
+            response_for_db = response
+            if lead_ready_data:
+                response_for_db = response_for_db.rstrip() + '\n[LEAD_SAVED]'
+
             # 10.2. Парсимо [CONTACT_CHANGE:...] — клієнт хоче змінити контактні дані
             contact_change_desc = self.ai_agent._parse_contact_change(response)
             if contact_change_desc:
@@ -2824,10 +2830,12 @@ class DirectHandler:
             album_urls = self._validate_photo_urls(album_urls, response)
             photo_urls = self._validate_photo_urls(photo_urls, response)
 
-            # 11. Зберігаємо відповідь асистента в БД (вже без маркерів)
+            # 11. Зберігаємо відповідь асистента в БД
+            # response_for_db містить [LEAD_SAVED] мітку якщо лід щойно зафіксовано —
+            # AI побачить це в историї і не буде повторно генерувати [LEAD_READY]
             assistant_msg_id = self.ai_agent.db.add_assistant_message(
                 username=username,
-                content=response,
+                content=response_for_db,
                 display_name=display_name
             )
 
@@ -2853,6 +2861,7 @@ class DirectHandler:
             response = _re.sub(r'\[ESCALATION\]', '', response).strip()
             response = _re.sub(r'\[PHOTO:[^\]]*\]', '', response).strip()
             response = _re.sub(r'\[ALBUM:[^\]]*\]', '', response).strip()
+            response = _re.sub(r'\[LEAD_SAVED\]', '', response).strip()
 
             # Якщо є \n\n — це розділювач між блоками (опис + питання)
             # Кожен блок відправляємо окремим повідомленням
