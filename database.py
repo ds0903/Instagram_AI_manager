@@ -307,16 +307,14 @@ class Database:
         Пропускає чати де stale_checked_at < timeout_minutes хвилин тому (cooldown)."""
         with self.conn.cursor() as cur:
             cur.execute("""
-                SELECT c.username
-                FROM conversations c
-                INNER JOIN (
+                SELECT last_msg.username
+                FROM (
                     SELECT username, MAX(created_at) AS last_at
                     FROM conversations
                     GROUP BY username
-                ) latest ON c.username = latest.username AND c.created_at = latest.last_at
-                LEFT JOIN chat_state cs ON cs.username = c.username
-                WHERE c.role = 'assistant'
-                  AND c.created_at < NOW() - INTERVAL '%s minutes'
+                ) last_msg
+                LEFT JOIN chat_state cs ON cs.username = last_msg.username
+                WHERE last_msg.last_at < NOW() - INTERVAL '%s minutes'
                   AND (cs.stale_checked_at IS NULL
                        OR cs.stale_checked_at < NOW() - INTERVAL '%s minutes')
             """ % (int(timeout_minutes), int(timeout_minutes)))
