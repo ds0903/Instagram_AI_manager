@@ -1342,23 +1342,33 @@ class DirectHandler:
             logger.info("📎 Відкриваємо пост для захоплення контенту...")
 
             # Шукаємо зображення-превʼю поста в контейнері (піднімаємось по DOM)
+            # Використовуємо naturalWidth/naturalHeight — bounding_box() повертає 0 на сервері
             clickable = None
+            post_card_container = post_element  # зберігаємо для fallback скріншоту
             container = post_element
             for _ in range(10):
                 try:
                     container = container.locator("xpath=..").first
                 except Exception:
                     break
-                # Шукаємо img з CDN URL всередині контейнера
                 try:
                     imgs = container.locator("img").all()
                     for img in imgs:
                         src = img.get_attribute('src') or ''
-                        w = (img.bounding_box() or {}).get('width', 0)
-                        h = (img.bounding_box() or {}).get('height', 0)
-                        if ('cdninstagram' in src or 'fbcdn' in src) and w > 50 and h > 50:
+                        if 'cdninstagram' not in src and 'fbcdn' not in src:
+                            continue
+                        if '/t51.2885-19/' in src:  # профільне фото — пропускаємо
+                            continue
+                        # naturalWidth/naturalHeight працюють навіть на сервері
+                        try:
+                            dims = img.evaluate("el => [el.naturalWidth, el.naturalHeight]")
+                            nw, nh = dims[0], dims[1]
+                        except Exception:
+                            nw, nh = 0, 0
+                        if nw > 50 and nh > 50:
                             clickable = img
-                            logger.info(f"📎 Знайдено превʼю поста для кліку: {w}x{h}")
+                            post_card_container = container
+                            logger.info(f"📎 Знайдено превʼю поста для кліку: {nw}x{nh}")
                             break
                 except Exception:
                     continue
@@ -1366,8 +1376,18 @@ class DirectHandler:
                     break
 
             if not clickable:
-                logger.warning("📎 Не знайдено превʼю поста, клікаємо на елемент напряму")
-                clickable = post_element
+                # НЕ клікаємо на a._a6hd (це лінк автора → перехід на профіль)
+                # Робимо скріншот картки поста прямо в чаті
+                logger.warning("📎 Не знайдено превʼю — скріншот картки поста в чаті...")
+                try:
+                    screenshot = post_card_container.screenshot()
+                    if screenshot and len(screenshot) > 5000:
+                        screenshots.append(screenshot)
+                        logger.info(f"📎 Скріншот картки поста в чаті: {len(screenshot)} байт")
+                        self._save_debug_screenshots(screenshots, username, "post_card")
+                except Exception as e:
+                    logger.warning(f"📎 Скріншот картки не вдався: {e}")
+                return screenshots
 
             try:
                 clickable.click()
