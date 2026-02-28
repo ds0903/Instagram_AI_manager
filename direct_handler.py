@@ -59,7 +59,9 @@ class DirectHandler:
         # Таймер перевірки Запитів / Скритих запитів
         _req_interval_raw = int(os.getenv('REQUESTS_CHECK_INTERVAL_MINUTES', '15'))
         self._requests_check_interval = _req_interval_raw * 60  # переводимо в секунди
-        self._last_requests_check = 0  # 0 = ще не перевіряли → перша ітерація одразу зайде
+        # Завантажуємо таймер з БД (щоб пережив рестарт бота)
+        saved_ts = self.ai_agent.db.get_bot_state('last_requests_check')
+        self._last_requests_check = float(saved_ts) if saved_ts else 0
         if self._requests_check_interval == 0:
             logger.info("REQUESTS_CHECK_INTERVAL_MINUTES=0 → Запити / Скриті запити вимкнено")
         else:
@@ -3491,6 +3493,7 @@ class DirectHandler:
                 # Оновлюємо час останньої перевірки Запитів
                 if check_requests_now:
                     self._last_requests_check = time.time()
+                    self.ai_agent.db.set_bot_state('last_requests_check', str(self._last_requests_check))
                     logger.info("Таймер Запитів оновлено")
 
                 # Перевірка застарілих чатів (бот писав останнім > N хв тому)

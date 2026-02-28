@@ -176,6 +176,15 @@ class Database:
                 );
             """)
 
+            # Bot state - глобальний стан бота (persist across restarts)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    key VARCHAR(255) PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
             # Міграція: прибираємо UNIQUE constraint на username (якщо ще є)
             cur.execute("""
                 DO $$ BEGIN
@@ -327,6 +336,22 @@ class Database:
                 VALUES (%s, NULL)
                 ON CONFLICT (username) DO UPDATE SET stale_checked_at = NULL
             """, (username,))
+
+    def get_bot_state(self, key: str) -> str | None:
+        """Отримати значення глобального стану бота."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_state WHERE key = %s", (key,))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def set_bot_state(self, key: str, value: str):
+        """Зберегти значення глобального стану бота."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_state (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            """, (key, value))
 
     def get_last_assistant_message(self, username: str) -> dict | None:
         """Отримати останнє повідомлення бота з БД (id + content)."""
