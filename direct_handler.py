@@ -3351,6 +3351,28 @@ class DirectHandler:
                 heartbeat("Ітерація inbox loop")
                 total_processed = 0
 
+                # Примусовий захід до DEBUG_ONLY_USERNAME — на самому початку ітерації
+                if self.DEBUG_ONLY_USERNAME:
+                    heartbeat(f"[DEBUG] Примусова обробка: {self.DEBUG_ONLY_USERNAME}")
+                    logger.info(f"[DEBUG] Шукаємо чат '{self.DEBUG_ONLY_USERNAME}' в inbox...")
+                    self.go_to_location('https://www.instagram.com/direct/inbox/')
+                    all_chats = self.get_all_chats()
+                    force_chat = next(
+                        (c for c in all_chats
+                         if self.DEBUG_ONLY_USERNAME.lower() in c.get('username', '').lower()),
+                        None
+                    )
+                    if force_chat:
+                        logger.info(f"[DEBUG] Знайдено → обробляємо: {force_chat['username']}")
+                        if force_chat.get('href'):
+                            self.process_chat(force_chat['href'])
+                        else:
+                            force_chat['location_url'] = 'https://www.instagram.com/direct/inbox/'
+                            force_chat['location'] = 'Директ'
+                            self.process_chat_by_click(force_chat)
+                    else:
+                        logger.info(f"[DEBUG] Чат '{self.DEBUG_ONLY_USERNAME}' не знайдено в inbox")
+
                 # Визначаємо чи прийшов час перевіряти Запити / Скриті запити
                 now = time.time()
                 if self._requests_check_interval == 0:
@@ -3440,28 +3462,6 @@ class DirectHandler:
                 if check_requests_now:
                     self._last_requests_check = time.time()
                     logger.info("Таймер Запитів оновлено")
-
-                # Примусовий захід до DEBUG_ONLY_USERNAME (навіть якщо немає нових повідомлень)
-                if self.DEBUG_ONLY_USERNAME:
-                    heartbeat(f"[DEBUG] Примусова обробка: {self.DEBUG_ONLY_USERNAME}")
-                    logger.info(f"[DEBUG] Шукаємо чат '{self.DEBUG_ONLY_USERNAME}' в inbox...")
-                    self.go_to_location('https://www.instagram.com/direct/inbox/')
-                    all_chats = self.get_all_chats()
-                    force_chat = next(
-                        (c for c in all_chats
-                         if self.DEBUG_ONLY_USERNAME.lower() in c.get('username', '').lower()),
-                        None
-                    )
-                    if force_chat:
-                        logger.info(f"[DEBUG] Знайдено чат → обробляємо: {force_chat['username']}")
-                        if force_chat.get('href'):
-                            self.process_chat(force_chat['href'])
-                        else:
-                            force_chat['location_url'] = 'https://www.instagram.com/direct/inbox/'
-                            force_chat['location'] = 'Директ'
-                            self.process_chat_by_click(force_chat)
-                    else:
-                        logger.info(f"[DEBUG] Чат '{self.DEBUG_ONLY_USERNAME}' не знайдено в inbox")
 
                 # Перевірка застарілих чатів (бот писав останнім > N хв тому)
                 heartbeat("Перевірка застарілих чатів")
