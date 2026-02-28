@@ -3317,6 +3317,9 @@ class DirectHandler:
         Якщо бот писав останнім > STALE_CHAT_TIMEOUT_MINUTES хвилин тому —
         заходимо і скануємо: раптом клієнт написав а ми пропустили."""
         timeout = int(os.getenv('STALE_CHAT_TIMEOUT_MINUTES', '15'))
+        if timeout == 0:
+            logger.info("🕐 Перевірка застарілих чатів вимкнена (STALE_CHAT_TIMEOUT_MINUTES=0)")
+            return 0
         stale_usernames = self.ai_agent.db.get_stale_bot_chats(timeout)
 
         if not stale_usernames:
