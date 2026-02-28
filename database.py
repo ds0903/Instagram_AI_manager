@@ -172,8 +172,12 @@ class Database:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS chat_state (
                     username VARCHAR(255) PRIMARY KEY,
-                    stale_checked_at TIMESTAMP NULL
+                    stale_checked_at TIMESTAMP NULL,
+                    thread_id VARCHAR(50) NULL
                 );
+            """)
+            cur.execute("""
+                ALTER TABLE chat_state ADD COLUMN IF NOT EXISTS thread_id VARCHAR(50) NULL;
             """)
 
             # Bot state - глобальний стан бота (persist across restarts)
@@ -336,6 +340,22 @@ class Database:
                 VALUES (%s, NULL)
                 ON CONFLICT (username) DO UPDATE SET stale_checked_at = NULL
             """, (username,))
+
+    def save_thread_id(self, username: str, thread_id: str):
+        """Зберегти thread_id чату (число з URL /direct/t/XXXXXXX/)."""
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO chat_state (username, thread_id)
+                VALUES (%s, %s)
+                ON CONFLICT (username) DO UPDATE SET thread_id = EXCLUDED.thread_id
+            """, (username, thread_id))
+
+    def get_thread_id(self, username: str) -> str | None:
+        """Отримати збережений thread_id для username."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT thread_id FROM chat_state WHERE username = %s", (username,))
+            row = cur.fetchone()
+        return row[0] if row else None
 
     def get_bot_state(self, key: str) -> str | None:
         """Отримати значення глобального стану бота."""

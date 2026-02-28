@@ -2594,6 +2594,18 @@ class DirectHandler:
 
             logger.info(f"Обробка чату: {username} ({display_name})")
 
+            # Зберігаємо thread_id з поточного URL (для прямої навігації в майбутньому)
+            try:
+                current_url = self.driver.url
+                import re as _re
+                m = _re.search(r'/direct/t/(\d+)/', current_url)
+                if m:
+                    thread_id = m.group(1)
+                    self.ai_agent.db.save_thread_id(username, thread_id)
+                    logger.debug(f"Thread ID збережено: {username} → {thread_id}")
+            except Exception:
+                pass
+
             # 1. Читаємо ВСІ повідомлення користувача з екрану
             user_messages = self.get_user_messages(chat_username=username)
             if not user_messages:
@@ -3252,11 +3264,25 @@ class DirectHandler:
             return False
 
     def _open_chat_by_username_from_inbox(self, username: str) -> bool:
-        """Відкрити переписку з username зі сторінки інбоксу.
-        Спочатку шукаємо span[@title=username] у видимому списку,
-        якщо нема — використовуємо DM search input."""
+        """Відкрити переписку з username.
+        Спроба 1: пряма навігація по thread_id URL (найнадійніше).
+        Спроба 2: span[@title] у списку інбоксу.
+        Спроба 3: DM search input."""
         try:
-            # Переходимо в інбокс
+            # Спроба 1: пряма навігація по thread_id
+            thread_id = self.ai_agent.db.get_thread_id(username)
+            if thread_id:
+                thread_url = f"https://www.instagram.com/direct/t/{thread_id}/"
+                logger.info(f"Відкриваємо чат {username} по thread URL: {thread_url}")
+                self.go_to_location(thread_url)
+                time.sleep(3)
+                # Перевіряємо що потрапили в потрібний чат
+                if f'/direct/t/{thread_id}/' in self.driver.url:
+                    logger.info(f"Застарілий чат {username} відкрито по thread_id")
+                    return True
+                logger.warning(f"Thread URL не відкрився ({self.driver.url}), fallback на пошук")
+
+            # Переходимо в інбокс для fallback
             self.go_to_location('https://www.instagram.com/direct/inbox/')
             time.sleep(2)
 
