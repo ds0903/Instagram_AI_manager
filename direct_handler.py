@@ -50,6 +50,15 @@ class DirectHandler:
         else:
             logger.warning("BOT_USERNAME не вказано в .env! Визначення ролей може бути неточним.")
 
+        # Таймер перевірки Запитів / Скритих запитів
+        _req_interval_raw = int(os.getenv('REQUESTS_CHECK_INTERVAL_MINUTES', '15'))
+        self._requests_check_interval = _req_interval_raw * 60  # переводимо в секунди
+        self._last_requests_check = 0  # 0 = ще не перевіряли → перша ітерація одразу зайде
+        if self._requests_check_interval == 0:
+            logger.info("REQUESTS_CHECK_INTERVAL_MINUTES=0 → Запити / Скриті запити вимкнено")
+        else:
+            logger.info(f"Запити / Скриті запити: перевірка раз на {_req_interval_raw} хв")
+
     def _dismiss_popups(self):
         """Закрити Instagram попапи (сповіщення, cookies тощо) якщо є."""
         try:
@@ -3307,10 +3316,28 @@ class DirectHandler:
                 heartbeat("Ітерація inbox loop")
                 total_processed = 0
 
+                # Визначаємо чи прийшов час перевіряти Запити / Скриті запити
+                now = time.time()
+                if self._requests_check_interval == 0:
+                    check_requests_now = False
+                else:
+                    elapsed = now - self._last_requests_check
+                    check_requests_now = elapsed >= self._requests_check_interval
+                    if check_requests_now:
+                        logger.info(
+                            f"Час перевірити Запити / Скриті запити "
+                            f"(минуло {int(elapsed // 60)} хв {int(elapsed % 60)} с)"
+                        )
+
                 # Обходимо кожну локацію ПО ЧЕРЗІ: знайшли чати → відповіли → наступна
                 for location in self.DM_LOCATIONS:
                     url = location['url']
                     name = location['name']
+
+                    # Запити / Скриті запити — тільки якщо прийшов час
+                    if name in ('Запити', 'Скриті запити'):
+                        if not check_requests_now:
+                            continue
 
                     heartbeat(f"Перевірка: {name}")
                     logger.info(f"Перевіряю: {name} ({url})")
@@ -3373,6 +3400,11 @@ class DirectHandler:
                     time.sleep(random.uniform(1, 2))
 
                 logger.info(f"Оброблено {total_processed} чатів.")
+
+                # Оновлюємо час останньої перевірки Запитів
+                if check_requests_now:
+                    self._last_requests_check = time.time()
+                    logger.info("Таймер Запитів оновлено")
 
                 # Перевірка застарілих чатів (бот писав останнім > N хв тому)
                 heartbeat("Перевірка застарілих чатів")
