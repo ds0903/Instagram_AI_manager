@@ -507,7 +507,7 @@ class InstagramBot:
             session_name = os.getenv('SESSION_FILE_WRITER', 'session_writer.pkl')
 
         restart_count = 0
-        max_restarts = 3
+        max_restarts = 2
         relogin_attempted = False  # Автологін — тільки одна спроба
 
         # Запускаємо watchdog
