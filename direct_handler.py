@@ -50,6 +50,12 @@ class DirectHandler:
         else:
             logger.warning("BOT_USERNAME не вказано в .env! Визначення ролей може бути неточним.")
 
+        # DEBUG: примусово заходити до конкретного користувача кожну ітерацію
+        _debug_user = os.getenv('DEBUG_ONLY_USERNAME', '').strip()
+        self.DEBUG_ONLY_USERNAME = _debug_user if _debug_user else None
+        if self.DEBUG_ONLY_USERNAME:
+            logger.info(f"[DEBUG] FORCE користувач: '{self.DEBUG_ONLY_USERNAME}' — заходимо кожну ітерацію")
+
         # Таймер перевірки Запитів / Скритих запитів
         _req_interval_raw = int(os.getenv('REQUESTS_CHECK_INTERVAL_MINUTES', '15'))
         self._requests_check_interval = _req_interval_raw * 60  # переводимо в секунди
@@ -621,6 +627,21 @@ class DirectHandler:
                     # Фільтр: профільні фото (t51.2885-19) — НЕ фото з чату
                     if '/t51.2885-19/' in src:
                         continue
+                    # Фільтр: thumbnail поста/сторіз — обробляється окремо post/story сканером
+                    try:
+                        is_post_thumb = img.evaluate("""(img) => {
+                            var el = img;
+                            for (var i = 0; i < 10; i++) {
+                                el = el.parentElement;
+                                if (!el) return false;
+                                if (el.querySelector('a._a6hd')) return true;
+                            }
+                            return false;
+                        }""")
+                        if is_post_thumb:
+                            continue
+                    except Exception:
+                        pass
                     w = int(img.get_attribute('width') or '0')
                     h = int(img.get_attribute('height') or '0')
                     if w < 50 or h < 50:
@@ -917,22 +938,28 @@ class DirectHandler:
                         }
                         if (!imageUrl) return null;  // Без фото — не пост
 
-                        // Текст опису — шукаємо span з line-clamp (caption поста)
+                        // Текст опису — шукаємо span ТІЛЬКИ всередині картки поста
+                        // (4 рівні вгору від лінка — це сама картка, не весь чат)
                         var caption = '';
-                        var spans = container.querySelectorAll('span');
+                        var postCard = link;
+                        for (var n = 0; n < 4; n++) {
+                            if (!postCard.parentElement) break;
+                            postCard = postCard.parentElement;
+                        }
+                        var cardSpans = postCard.querySelectorAll('span');
                         var bestLen = 0;
-                        for (var m = 0; m < spans.length; m++) {
-                            var style = spans[m].getAttribute('style') || '';
-                            var text = spans[m].textContent.trim();
+                        for (var m = 0; m < cardSpans.length; m++) {
+                            var style = cardSpans[m].getAttribute('style') || '';
+                            var text = cardSpans[m].textContent.trim();
                             // Пріоритет: span з line-clamp (точно caption)
-                            if (style.includes('line-clamp') && text.length > 20) {
-                                caption = text;
+                            if (style.includes('line-clamp') && text.length > 5) {
+                                caption = text.substring(0, 80);
                                 break;
                             }
-                            // Fallback: найдовший текст
-                            if (text.length > bestLen && text.length > 30) {
+                            // Fallback: найдовший текст (але не більше 80 символів)
+                            if (text.length > bestLen && text.length > 10) {
                                 bestLen = text.length;
-                                caption = text;
+                                caption = text.substring(0, 80);
                             }
                         }
 
@@ -945,8 +972,8 @@ class DirectHandler:
                     post_author = post_data.get('postAuthor', '')
                     caption = post_data.get('caption', '')
 
-                    # Дедуплікація: один і той же пост — один запис
-                    dedup_key = f"{post_author}:{caption[:50]}"
+                    # Дедуплікація: тільки по автору — один пост від одного автора = один запис
+                    dedup_key = post_author
                     if dedup_key in seen_captions:
                         continue
                     seen_captions.add(dedup_key)
@@ -955,11 +982,12 @@ class DirectHandler:
                     is_from_user = True
                     y = (link_el.bounding_box() or {}).get('y', 0)
 
-                    # Якщо автор поста — наш бот, це клієнт переслав наш пост
+                    # Content без caption — стабільний ключ для БД.
+                    # AI бачить вміст поста через скріншот (_capture_post_content).
                     if post_author.lower() == self.bot_username:
-                        content = f"[Клієнт переслав наш пост]: {caption}" if caption else "[Клієнт переслав наш пост]"
+                        content = "[Клієнт переслав наш пост]"
                     else:
-                        content = f"[Пост від @{post_author}]: {caption}" if caption else f"[Пост від @{post_author}]"
+                        content = f"[Пост від @{post_author}]"
 
                     all_messages.append({
                         'content': content,
@@ -2620,7 +2648,14 @@ class DirectHandler:
             message_type = 'text'
             for msg in unanswered:
                 if msg['message_type'] == 'image' and msg.get('image_src'):
-                    if not image_data:
+                    if story_images_list:
+                        # Вже є скріншоти поста/сторіз — додаємо фото до них (не перетираємо story_media)
+                        logger.info(f"📷 Завантажуємо фото до story_images_list: {msg['image_src'][:80]}...")
+                        extra = self._download_image(msg['image_src'], msg.get('element'))
+                        if extra:
+                            story_images_list.append(extra)
+                            logger.info(f"📷 Фото додано до списку ({len(extra)} байт), всього: {len(story_images_list)}")
+                    elif not image_data:
                         logger.info(f"📷 Завантажуємо зображення: {msg['image_src'][:80]}...")
                         image_data = self._download_image(msg['image_src'], msg.get('element'))
                         if image_data:
@@ -3405,6 +3440,28 @@ class DirectHandler:
                 if check_requests_now:
                     self._last_requests_check = time.time()
                     logger.info("Таймер Запитів оновлено")
+
+                # Примусовий захід до DEBUG_ONLY_USERNAME (навіть якщо немає нових повідомлень)
+                if self.DEBUG_ONLY_USERNAME:
+                    heartbeat(f"[DEBUG] Примусова обробка: {self.DEBUG_ONLY_USERNAME}")
+                    logger.info(f"[DEBUG] Шукаємо чат '{self.DEBUG_ONLY_USERNAME}' в inbox...")
+                    self.go_to_location('https://www.instagram.com/direct/inbox/')
+                    all_chats = self.get_all_chats()
+                    force_chat = next(
+                        (c for c in all_chats
+                         if self.DEBUG_ONLY_USERNAME.lower() in c.get('username', '').lower()),
+                        None
+                    )
+                    if force_chat:
+                        logger.info(f"[DEBUG] Знайдено чат → обробляємо: {force_chat['username']}")
+                        if force_chat.get('href'):
+                            self.process_chat(force_chat['href'])
+                        else:
+                            force_chat['location_url'] = 'https://www.instagram.com/direct/inbox/'
+                            force_chat['location'] = 'Директ'
+                            self.process_chat_by_click(force_chat)
+                    else:
+                        logger.info(f"[DEBUG] Чат '{self.DEBUG_ONLY_USERNAME}' не знайдено в inbox")
 
                 # Перевірка застарілих чатів (бот писав останнім > N хв тому)
                 heartbeat("Перевірка застарілих чатів")
