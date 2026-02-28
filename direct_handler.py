@@ -3111,12 +3111,20 @@ class DirectHandler:
                 self.ai_agent.pending_trigger_response = None
 
             # 16. Відправляємо фото / альбом
+            # Відновлюємо sent_photos з БД (щоб не дублювати після рестарту бота)
             if username not in self._sent_photos:
                 self._sent_photos[username] = set()
+                history = self.ai_agent.db.get_conversation_history(username, limit=200)
+                for h_msg in history:
+                    if h_msg.get('role') == 'assistant' and '[Фото надіслано' in h_msg.get('content', ''):
+                        for found_url in _re.findall(r'https?://[^\s\]]+', h_msg['content']):
+                            self._sent_photos[username].add(found_url)
+                if self._sent_photos[username]:
+                    logger.info(f"📸 Відновлено {len(self._sent_photos[username])} надісланих фото з БД для {username}")
 
             # 16a. Альбом [ALBUM:...] — всі фото одним повідомленням
             if album_urls:
-                new_album_urls = [u for u in album_urls if u not in self._sent_photos[username]]
+                new_album_urls = [u for u in album_urls if u not in self._sent_photos[username]][:3]  # max 3 фото
                 if new_album_urls:
                     time.sleep(1)
                     logger.info(f"📸 Відправляємо альбом {len(new_album_urls)} фото для {username}")
