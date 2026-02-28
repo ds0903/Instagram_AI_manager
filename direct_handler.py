@@ -1079,8 +1079,15 @@ class DirectHandler:
             y_pos = msg.get('y_position', 0)
 
             if content in media_labels:
-                # Медіа — нове якщо НИЖЧЕ останньої відповіді бота (більша Y)
-                if y_pos > last_bot_y:
+                if last_bot_y == 0:
+                    # Бот не видно на екрані — Y-позиція ненадійна, fallback на БД
+                    if remaining.get(content, 0) > 0:
+                        remaining[content] -= 1
+                        logger.info(f"Медіа '{content}' y={y_pos}, bot_y=0 → вже відповіли (DB fallback, залишок: {remaining[content]})")
+                    else:
+                        logger.info(f"Медіа '{content}' y={y_pos}, bot_y=0 → НОВЕ (DB fallback)")
+                        unanswered.append(msg)
+                elif y_pos > last_bot_y:
                     logger.info(f"Медіа '{content}' y={y_pos} > bot_y={last_bot_y} → НОВЕ")
                     unanswered.append(msg)
                 else:
