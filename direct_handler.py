@@ -391,22 +391,15 @@ class DirectHandler:
     def try_accept_request(self) -> bool:
         """
         Перевірити чи є кнопка Accept (прийняти запит на переписку).
-        Кнопка Accept — це div[@role='button'] з текстом "Accept" прямо всередині (без span).
-        Якщо є — натиснути і дочекатись завантаження.
+        5 стратегій пошуку з fallback.
         """
-        try:
-            # Кнопка Accept — div[@role='button'] з прямим текстом "Accept"
-            accept_buttons = self.driver.locator("xpath=//div[@role='button'][text()='Accept']").all()
+        # Чекаємо щоб сторінка встигла завантажити кнопку
+        time.sleep(2)
 
-            if not accept_buttons:
-                logger.info("Кнопка Accept не знайдена (це звичайний чат)")
-                return False
-
-            logger.info(f"Знайдено кнопку Accept!")
-            accept_buttons[0].click()
+        def _do_accept(btn_el):
+            """Клікнути кнопку і дочекатись textbox."""
+            btn_el.click()
             logger.info("Натиснуто Accept — запит на переписку прийнято!")
-
-            # Чекаємо поки чат повністю завантажиться (textbox з'явиться)
             try:
                 self.driver.wait_for_selector("xpath=//div[@role='textbox']", timeout=10000)
                 logger.info("Чат завантажено після Accept (textbox знайдено)")
@@ -414,11 +407,69 @@ class DirectHandler:
                 logger.warning("Textbox не з'явився після Accept, чекаємо ще...")
                 time.sleep(5)
 
-            return True
+        # Стратегія 1: CSS :has-text() — найнадійніший, обробляє пробіли/span
+        try:
+            el = self.driver.wait_for_selector(
+                "div[role='button']:has-text('Accept')", timeout=2000
+            )
+            if el:
+                logger.info("Accept знайдено: CSS :has-text('Accept')")
+                _do_accept(el)
+                return True
+        except Exception:
+            pass
 
-        except Exception as e:
-            logger.error(f"Помилка пошуку/кліку Accept: {e}")
-            return False
+        # Стратегія 2: XPath normalize-space — обробляє \n і пробіли навколо тексту
+        try:
+            btns = self.driver.locator(
+                "xpath=//div[@role='button'][normalize-space(text())='Accept']"
+            ).all()
+            if btns:
+                logger.info("Accept знайдено: XPath normalize-space(text())")
+                _do_accept(btns[0])
+                return True
+        except Exception:
+            pass
+
+        # Стратегія 3: XPath contains(text()) — часткове співпадіння прямого текствузла
+        try:
+            btns = self.driver.locator(
+                "xpath=//div[@role='button'][contains(text(), 'Accept')]"
+            ).all()
+            if btns:
+                logger.info("Accept знайдено: XPath contains(text())")
+                _do_accept(btns[0])
+                return True
+        except Exception:
+            pass
+
+        # Стратегія 4: XPath contains(.) — текст у будь-якому нащадку (span, div...)
+        # Фільтруємо щоб не схопити контейнер "Accept message request from..."
+        try:
+            btns = self.driver.locator(
+                "xpath=//div[@role='button'][contains(., 'Accept')][not(contains(., 'request'))]"
+            ).all()
+            if btns:
+                logger.info("Accept знайдено: XPath contains(.) excl. request-text")
+                _do_accept(btns[0])
+                return True
+        except Exception:
+            pass
+
+        # Стратегія 5: tabindex=0 + normalize-space — fallback без role='button'
+        try:
+            btns = self.driver.locator(
+                "xpath=//div[@tabindex='0'][normalize-space(text())='Accept']"
+            ).all()
+            if btns:
+                logger.info("Accept знайдено: XPath tabindex=0 normalize-space")
+                _do_accept(btns[0])
+                return True
+        except Exception:
+            pass
+
+        logger.info("Кнопка Accept не знайдена (це звичайний чат)")
+        return False
 
     def get_all_unread_chats(self) -> list:
         """
@@ -3450,6 +3501,49 @@ class DirectHandler:
                             self.process_chat_by_click(force_chat)
                     else:
                         logger.info(f"[DEBUG] Чат '{self.DEBUG_ONLY_USERNAME}' не знайдено в inbox")
+
+                # [DEBUG] Примусова перевірка Запити / Скриті запити для DEBUG_ONLY_USERNAME
+                if self.DEBUG_ONLY_USERNAME:
+                    for req_info in [
+                        {
+                            'name': 'Запити',
+                            'url': 'https://www.instagram.com/direct/requests/',
+                            'navigate': lambda: self._click_requests_link(),
+                        },
+                        {
+                            'name': 'Скриті запити',
+                            'url': 'https://www.instagram.com/direct/requests/hidden/',
+                            'navigate': lambda: self._click_hidden_requests_btn(),
+                        },
+                    ]:
+                        req_name = req_info['name']
+                        req_url = req_info['url']
+                        heartbeat(f"[DEBUG] Перевірка {req_name}: {self.DEBUG_ONLY_USERNAME}")
+                        logger.info(f"[DEBUG] Шукаємо '{self.DEBUG_ONLY_USERNAME}' в {req_name}...")
+                        try:
+                            ok = req_info['navigate']()
+                            if not ok:
+                                logger.warning(f"[DEBUG] Не вдалося відкрити {req_name}")
+                                continue
+                            time.sleep(2)
+                            all_req_chats = self.get_all_chats()
+                            force_req_chat = next(
+                                (c for c in all_req_chats
+                                 if self.DEBUG_ONLY_USERNAME.lower() in c.get('username', '').lower()),
+                                None
+                            )
+                            if force_req_chat:
+                                logger.info(f"[DEBUG] Знайдено в {req_name} → обробляємо: {force_req_chat['username']}")
+                                force_req_chat['location_url'] = req_url
+                                force_req_chat['location'] = req_name
+                                if force_req_chat.get('href'):
+                                    self.process_chat(force_req_chat['href'])
+                                else:
+                                    self.process_chat_by_click(force_req_chat)
+                            else:
+                                logger.info(f"[DEBUG] Чат '{self.DEBUG_ONLY_USERNAME}' не знайдено в {req_name}")
+                        except Exception as e:
+                            logger.error(f"[DEBUG] Помилка перевірки {req_name}: {e}")
 
                 # Визначаємо чи прийшов час перевіряти Запити / Скриті запити
                 now = time.time()
