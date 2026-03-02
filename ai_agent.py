@@ -454,12 +454,34 @@ class AIAgent:
         """Запитати Gemini чи це один і той самий текст (різне форматування).
         Повертає True якщо AI вважає що це один текст (хибна тривога),
         False якщо це справді різні повідомлення."""
+        import re as _re
+
+        def clean_for_compare(text: str) -> str:
+            if not text: return ""
+            # 1. Видаляємо технічні маркери [MARKER:...]
+            t = _re.sub(r'\[[A-Z_]+:[^\]]*\]', '', text)
+            # 2. Видаляємо емодзі та спеціальні символи, залишаючи літери, цифри та базову пунктуацію
+            # \w в Python 3 включає Unicode літери (укр, рус тощо)
+            t = _re.sub(r'[^\w\s\d\.,!\?\-\(\):;\'"]+', ' ', t, flags=_re.UNICODE)
+            # 3. Нормалізуємо пробіли та регістр
+            t = _re.sub(r'\s+', ' ', t).strip().lower()
+            return t
+
+        c_screen = clean_for_compare(screen_text)
+        c_db = clean_for_compare(db_text)
+
+        # Якщо після очищення тексти ідентичні — навіть не питаємо AI
+        if c_screen == c_db:
+            logger.info("Тексти ідентичні після очищення (без запиту до AI)")
+            return True
+
         try:
             prompt = (
                 "Порівняй два тексти нижче. Вони можуть відрізнятись пробілами, "
                 "переносами рядків, емодзі або незначними символами. "
-                "Відповідай ТІЛЬКИ одним словом: YES якщо це один і той самий текст, "
-                "NO якщо це принципово різні повідомлення.\n\n"
+                "ВАЖЛИВО: технічні маркери типу [PHOTO_REQUEST:...] у базі - це нормально, "
+                "їх не буде на екрані. Якщо СЕНС повідомлення однаковий - відповідай YES.\n"
+                "Відповідай ТІЛЬКИ одним словом: YES або NO.\n\n"
                 f"ТЕКСТ З ЕКРАНУ:\n{screen_text}\n\n"
                 f"ТЕКСТ З БАЗИ ДАНИХ:\n{db_text}"
             )
@@ -468,9 +490,10 @@ class AIAgent:
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                 config=types.GenerateContentConfig(max_output_tokens=10)
             )
-            answer = (response.text or '').strip().upper()
+            raw_text = getattr(response, 'text', None) or ''
+            answer = raw_text.strip().upper()
             logger.info(f"AI перевірка тексту: відповідь='{answer}'")
-            return answer.startswith('YES')
+            return 'YES' in answer
         except Exception as e:
             logger.warning(f"AI перевірка тексту не вдалась: {e} — вважаємо різними")
             return False

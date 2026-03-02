@@ -661,12 +661,26 @@ class GoogleSheetsManager:
             fcl = file_color.lower().strip()
             if not req or not fcl:
                 return False
-            # Пряме входження
-            if req in fcl or fcl in req:
-                return True
-            # Стеммінг (для української: "зелена" vs "зелений" → "зелен")
-            if len(req) >= 4 and len(fcl) >= 4 and req[:4] == fcl[:4]:
-                return True
+            # Синоніми кольорів
+            synonyms = {
+                'блакитний': ['електрик', 'електник', 'синій', 'голубий'],
+                'синій': ['електрик', 'електник', 'блакитний'],
+                'електрик': ['блакитний', 'синій', 'електник'],
+                'електник': ['електрик', 'блакитний', 'синій'],
+                'червоний': ['бордо', 'марсала'],
+                'зелений': ['хакі', 'олива']
+            }
+            # Перевіряємо синоніми запиту
+            req_variants = [req]
+            for k, v in synonyms.items():
+                if req in k or k in req:
+                    req_variants.extend(v)
+
+            for variant in req_variants:
+                if variant in fcl or fcl in variant:
+                    return True
+                if len(variant) >= 4 and len(fcl) >= 4 and variant[:4] == fcl[:4]:
+                    return True
             return False
 
         for f in files:
