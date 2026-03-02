@@ -3038,21 +3038,33 @@ class DirectHandler:
 
             # Резолвимо PHOTO_REQUEST → URL (тут іде Drive, але ТІЛЬКИ якщо AI просить фото)
             sm = getattr(self.ai_agent, 'sheets_manager', None)
+            photo_resolved = False
             if sm and photo_reqs:
                 for (prod, cat, col) in photo_reqs:
                     url = sm.resolve_photo_request(prod, cat, col)
                     if url:
                         photo_urls.append(url)
+                        photo_resolved = True
                     else:
                         logger.warning(f"PHOTO_REQUEST не розв'язано: {prod}/{cat}/{col}")
 
+            album_resolved = False
             if sm and album_reqs:
                 for (prod, cat, cols) in album_reqs:
                     urls = sm.resolve_album_request(prod, cat, cols)
                     if urls:
                         album_urls.extend(urls)
+                        album_resolved = True
                     else:
                         logger.warning(f"ALBUM_REQUEST не розв'язано: {prod}/{cat}/{cols}")
+
+            # Якщо AI просив фото/альбом, але ми НІЧОГО не знайшли - додаємо пояснення в текст
+            if (photo_reqs and not photo_resolved) or (album_reqs and not album_resolved):
+                if "\n" in response:
+                    # Додаємо перед останнім реченням або в кінці
+                    response += "\n\n(На жаль, фото цього кольору зараз немає під рукою, але я можу підібрати інший варіант! 😊)"
+                else:
+                    response += " (На жаль, фото цього кольору зараз немає під рукою)"
 
             if album_urls or photo_urls or photo_reqs or album_reqs:
                 response = self.ai_agent._strip_photo_markers(response)

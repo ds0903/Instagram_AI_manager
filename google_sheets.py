@@ -655,6 +655,20 @@ class GoogleSheetsManager:
 
         # Фільтруємо кандидатів: підходяща категорія, не Розмірна сітка
         candidates = []
+
+        def colors_match(requested: str, file_color: str) -> bool:
+            req = requested.lower().strip()
+            fcl = file_color.lower().strip()
+            if not req or not fcl:
+                return False
+            # Пряме входження
+            if req in fcl or fcl in req:
+                return True
+            # Стеммінг (для української: "зелена" vs "зелений" → "зелен")
+            if len(req) >= 4 and len(fcl) >= 4 and req[:4] == fcl[:4]:
+                return True
+            return False
+
         for f in files:
             path = f['path']  # напр. "Дівчинка/Шоколадний.jpg"
             parts = path.split('/')
@@ -668,6 +682,7 @@ class GoogleSheetsManager:
                 continue
             # Категорія
             if is_root:
+                # В ідеалі при root шукаємо спочатку в корені, але якщо не знайдемо - fallback нижче
                 if file_cat != 'root':
                     continue
             else:
@@ -675,10 +690,10 @@ class GoogleSheetsManager:
                     continue
             # Колір — ім'я файлу без розширення містить колір (або навпаки)
             name_no_ext = file_name.rsplit('.', 1)[0].lower()
-            if color_lower and (color_lower in name_no_ext or name_no_ext.startswith(color_lower)):
+            if colors_match(color_lower, name_no_ext):
                 candidates.append(f)
 
-        if not candidates and not is_root:
+        if not candidates:
             # Fallback: шукаємо в будь-якій категорії
             for f in files:
                 path = f['path']
@@ -687,7 +702,7 @@ class GoogleSheetsManager:
                 if 'розмірна сітка' in path.lower():
                     continue
                 name_no_ext = file_name.rsplit('.', 1)[0].lower()
-                if color_lower and (color_lower in name_no_ext or name_no_ext.startswith(color_lower)):
+                if colors_match(color_lower, name_no_ext):
                     candidates.append(f)
 
         if not candidates:
