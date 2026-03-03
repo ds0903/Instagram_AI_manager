@@ -545,10 +545,29 @@ class InstagramBot:
                 # 2. Завантажуємо сесію (cookies)
                 heartbeat("Завантаження сесії")
                 if not self.load_session(session_name):
-                    logger.error("Сесія не валідна! Перевір session файл.")
-                    self._notify_telegram(f"Сесія не валідна: {session_name}\nПотрібно перезайти в акаунт!")
-                    self.close()
-                    return False  # Не перезапускаємо - потрібен ручний логін
+                    logger.error("Сесія не валідна! Пробуємо auto-relogin...")
+                    ig_user = os.getenv('INSTAGRAM_USERNAME', '')
+                    ig_pass = os.getenv('INSTAGRAM_PASSWORD', '')
+                    session_json = str(SESSIONS_DIR / session_name.replace('.pkl', '.json'))
+                    relogin_ok = False
+                    if ig_user and ig_pass:
+                        try:
+                            from auto_login import auto_relogin
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                                future = _pool.submit(auto_relogin, session_json, ig_user, ig_pass)
+                                relogin_ok = future.result(timeout=300)
+                        except Exception as re_err:
+                            logger.error(f"Auto-relogin помилка: {re_err}")
+                    if relogin_ok:
+                        logger.info("Auto-relogin успішний! Перезапускаємо ітерацію...")
+                        self.close()
+                        continue  # перезапускаємо внутрішній цикл
+                    else:
+                        logger.error("Auto-relogin не вдався. Зупинка.")
+                        self._notify_telegram(f"Сесія не валідна: {session_name}\nAuto-relogin не вдався!")
+                        self.close()
+                        return False
 
                 logger.info("Успішно залогінено в Instagram!")
                 heartbeat("Залогінено")

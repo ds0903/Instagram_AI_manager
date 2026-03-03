@@ -67,6 +67,11 @@ class DirectHandler:
         else:
             logger.info(f"Запити / Скриті запити: перевірка раз на {_req_interval_raw} хв")
 
+        # Залишатись в чаті після відповіді
+        self._chat_stay_seconds = int(os.getenv('CHAT_STAY_SECONDS', '180'))
+        self._chat_poll_seconds = int(os.getenv('CHAT_POLL_SECONDS', '10'))
+        logger.info(f"Stay-in-chat: {self._chat_stay_seconds}с, опитування кожні {self._chat_poll_seconds}с")
+
     def _dismiss_popups(self):
         """Закрити Instagram попапи (сповіщення, cookies тощо) якщо є."""
         try:
@@ -3239,19 +3244,37 @@ class DirectHandler:
                 self.processed_messages.add(combined_key)
                 logger.info(f"Успішно відповіли {username}")
 
-            # 17. Одразу виходимо з чату в Direct (не висимо в переписці)
-            try:
-                logger.info(f"Виходимо з чату {username} → Direct")
-                self.driver.goto('https://www.instagram.com/direct/')
-                time.sleep(2)
-            except Exception as e:
-                logger.warning(f"Не вдалося перейти в Direct після відповіді: {e}")
-
             return success
 
         except Exception as e:
             logger.error(f"Помилка обробки чату: {e}")
             return False
+
+    def _run_chat_with_stay(self, username: str, display_name: str) -> bool:
+        """Обробляє чат і залишається в ньому CHAT_STAY_SECONDS секунд після відповіді."""
+        result = self._process_opened_chat(username, display_name)
+
+        stay_sec = self._chat_stay_seconds
+        poll_sec = self._chat_poll_seconds
+
+        if stay_sec > 0:
+            logger.info(f"Залишаємось в чаті {username} до {stay_sec}с (опитування кожні {poll_sec}с)")
+            deadline = time.time() + stay_sec
+            while time.time() < deadline:
+                time.sleep(poll_sec)
+                new_result = self._process_opened_chat(username, display_name)
+                if new_result:
+                    logger.info(f"Нове повідомлення від {username} — скидаємо таймер")
+                    deadline = time.time() + stay_sec
+            logger.info(f"Таймаут {stay_sec}с минув, виходимо з чату {username}")
+
+        try:
+            self.driver.goto('https://www.instagram.com/direct/')
+            time.sleep(2)
+        except Exception as e:
+            logger.warning(f"Не вдалося перейти в Direct після {username}: {e}")
+
+        return result
 
     def process_chat(self, chat_href: str) -> bool:
         """Обробка чату по href (inbox)."""
@@ -3263,7 +3286,7 @@ class DirectHandler:
 
             username = self.get_chat_username()
             display_name = self.get_display_name()
-            return self._process_opened_chat(username, display_name)
+            return self._run_chat_with_stay(username, display_name)
 
         except Exception as e:
             logger.error(f"Помилка обробки чату: {e}")
@@ -3341,7 +3364,7 @@ class DirectHandler:
                 chat_username = username
                 display_name = username
 
-            return self._process_opened_chat(chat_username, display_name)
+            return self._run_chat_with_stay(chat_username, display_name)
 
         except Exception as e:
             logger.error(f"Помилка process_chat_by_click: {e}")
