@@ -309,12 +309,13 @@ class Database:
             cur.execute("""
                 SELECT last_msg.username
                 FROM (
-                    SELECT username, MAX(created_at) AS last_at
+                    SELECT DISTINCT ON (username) username, role, created_at
                     FROM conversations
-                    GROUP BY username
+                    ORDER BY username, created_at DESC
                 ) last_msg
                 LEFT JOIN chat_state cs ON cs.username = last_msg.username
-                WHERE last_msg.last_at < NOW() - INTERVAL '%s minutes'
+                WHERE last_msg.role = 'assistant'
+                  AND last_msg.created_at < NOW() - INTERVAL '%s minutes'
                   AND (cs.stale_checked_at IS NULL
                        OR cs.stale_checked_at < NOW() - INTERVAL '%s minutes')
             """ % (int(timeout_minutes), int(timeout_minutes)))

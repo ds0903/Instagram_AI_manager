@@ -3476,6 +3476,7 @@ class DirectHandler:
                     logger.warning(f"Не вдалось відкрити чат {username} — пропускаємо")
                     continue
 
+                self.try_accept_request()
                 display_name = self.get_display_name()
                 result = self._process_opened_chat(username, display_name)
                 if result:
@@ -3483,7 +3484,7 @@ class DirectHandler:
                     processed += 1
                 else:
                     logger.info(f"ℹ️ Застарілий чат {username}: нових повідомлень немає")
-                    self.ai_agent.db.mark_stale_checked(username)
+                self.ai_agent.db.mark_stale_checked(username)
 
                 time.sleep(random.uniform(2, 4))
 
