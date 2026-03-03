@@ -157,6 +157,19 @@ def auto_relogin(session_file_path: str, username: str, password: str) -> bool:
                     logger.warning(f"Auto-login: немає реакції після 10с, повторюю спробу {login_attempt + 1}/3...")
                     time.sleep(random.uniform(2, 4))
 
+            # "We suspect automated behavior" — закриваємо якщо з'явився
+            try:
+                dismiss = (
+                    page.query_selector("xpath=//div[@role='button'][normalize-space(.)='Dismiss']") or
+                    page.query_selector("xpath=//button[normalize-space(.)='Dismiss']")
+                )
+                if dismiss:
+                    dismiss.click()
+                    logger.warning("Auto-login: закрито попап 'We suspect automated behavior'")
+                    time.sleep(1)
+            except Exception:
+                pass
+
             # Натискаємо "Save info" якщо з'явився діалог
             time.sleep(1)
             save_btn = (

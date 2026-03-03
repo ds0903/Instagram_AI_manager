@@ -79,6 +79,19 @@ class DirectHandler:
         except Exception:
             pass
 
+        # "We suspect automated behavior" — попап підозри в автоматизації
+        try:
+            dismiss_btn = self.driver.locator(
+                "xpath=//div[@role='button'][normalize-space(.)='Dismiss'] | "
+                "xpath=//button[normalize-space(.)='Dismiss']"
+            ).first
+            if dismiss_btn.is_visible(timeout=1000):
+                dismiss_btn.click()
+                logger.warning("Закрито попап 'We suspect automated behavior' (Dismiss)")
+                time.sleep(1)
+        except Exception:
+            pass
+
     def _dismiss_continue_popup(self):
         """Перевіряємо чи Instagram викинув з сесії (вікно 'Continue as ...').
         Якщо так — піднімаємо SessionKickedError щоб bot.py перезапустив ітерацію."""

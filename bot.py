@@ -436,12 +436,20 @@ class InstagramBot:
             if 'login' in current_url.lower() or 'accounts/login' in current_url:
                 return False
 
+            # "Continue as ..." — сесія протухла, треба клікнути Continue або перелогінитись
+            if self.page.locator(
+                "xpath=//div[@role='button'][normalize-space(.)='Continue'] | "
+                "xpath=//button[normalize-space(.)='Continue']"
+            ).count() > 0:
+                logger.warning("is_logged_in: знайдено кнопку 'Continue' — сесія не валідна")
+                return False
+
             if self.page.locator("xpath=//a[contains(@href, '/accounts/edit/')]").count() > 0:
                 return True
             if self.page.locator("xpath=//svg[@aria-label='Profile']").count() > 0:
                 return True
 
-            return 'login' not in current_url.lower()
+            return False
 
         except Exception:
             return False
