@@ -560,15 +560,33 @@ class AIAgent:
 
             # Додаємо поточне повідомлення
             if message_type == 'image' and image_data:
-                # Vision API - аналіз зображення
-                text_prompt = user_message or (
-                    "Клієнт надіслав фото — розпізнай весь текст на зображенні"
-                    " (моделі, розміри, ціни), визнач товар і запропонуй з асортименту."
-                )
+                # Фаза 1: попередній структурований аналіз типу одягу
+                clothing_analysis = self._analyze_clothing_in_photo(image_data, is_list=False)
+
+                if clothing_analysis and 'невизначено' not in clothing_analysis:
+                    base_instruction = (
+                        "Клієнт надіслав фото одягу.\n"
+                        f"Результат аналізу фото:\n{clothing_analysis}\n\n"
+                        "На основі цього аналізу знайди в каталозі товар ТОГО САМОГО типу одягу. "
+                        "Якщо точного збігу немає — запропонуй найближчий товар з тієї ж категорії "
+                        "(куртка→куртка, штани→штани, костюм→костюм, взуття→взуття). "
+                        "Якщо клієнт написав текст — відповідай на нього в першу чергу."
+                    )
+                else:
+                    base_instruction = (
+                        "Клієнт надіслав фото — визнач що зображено і запропонуй схожий товар з каталогу. "
+                        "Якщо це одяг — шукай той самий тип одягу в каталозі."
+                    )
+
+                if user_message:
+                    text_prompt = base_instruction + f"\n\nПовідомлення клієнта: {user_message}"
+                else:
+                    text_prompt = base_instruction
+
                 # Auto-detect mime type (screenshot = PNG, download = JPEG)
                 mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
                 logger.info(f"📷 Відправляємо зображення в Gemini Vision: {len(image_data)} байт, mime={mime}")
-                logger.info(f"📷 Текстовий промпт до фото: '{text_prompt[:100]}'")
+                logger.info(f"📷 Текстовий промпт до фото: '{text_prompt[:120]}'")
                 messages.append(
                     types.Content(
                         role="user",
@@ -604,25 +622,42 @@ class AIAgent:
                     types.Content(role="user", parts=parts)
                 )
             elif message_type == 'story_media' and image_data and isinstance(image_data, list):
-                # Story screenshots - кілька зображень сторіз (фото або кадри відео)
-                text_prompt = user_message or (
-                    "Клієнт відповів на сторіз. Розпізнай весь текст на скріншотах "
-                    "(моделі, розміри, ціни), визнач товар і запропонуй з асортименту."
-                )
+                # Фаза 1: попередній аналіз типу одягу на скріншотах сторіз
+                clothing_analysis = self._analyze_clothing_in_photo(image_data, is_list=True)
+
+                if clothing_analysis and 'невизначено' not in clothing_analysis:
+                    base_instruction = (
+                        "Клієнт відповів на сторіз з фото одягу.\n"
+                        f"Результат аналізу фото:\n{clothing_analysis}\n\n"
+                        "На основі цього аналізу знайди в каталозі товар ТОГО САМОГО типу одягу. "
+                        "Якщо точного збігу немає — запропонуй найближчий товар з тієї ж категорії "
+                        "(куртка→куртка, штани→штани, костюм→костюм, взуття→взуття). "
+                        "Якщо клієнт написав текст — відповідай на нього в першу чергу."
+                    )
+                else:
+                    base_instruction = (
+                        "Клієнт відповів на сторіз. Визнач що зображено і запропонуй схожий товар з каталогу. "
+                        "Якщо це одяг — шукай той самий тип одягу в каталозі."
+                    )
+
+                if user_message:
+                    text_prompt = base_instruction + f"\n\nПовідомлення клієнта: {user_message}"
+                else:
+                    text_prompt = base_instruction
+
                 parts = [types.Part(text=text_prompt)]
                 for i, screenshot in enumerate(image_data):
-                    mime = "image/png"
                     logger.info(f"📖 Скріншот сторіз #{i+1}: {len(screenshot)} байт")
                     parts.append(
                         types.Part(
                             inline_data=types.Blob(
-                                mime_type=mime,
+                                mime_type="image/png",
                                 data=screenshot
                             )
                         )
                     )
                 logger.info(f"📖 Відправляємо {len(image_data)} скріншотів сторіз в Gemini Vision")
-                logger.info(f"📖 Текстовий промпт: '{text_prompt[:100]}'")
+                logger.info(f"📖 Текстовий промпт: '{text_prompt[:120]}'")
                 messages.append(
                     types.Content(role="user", parts=parts)
                 )
@@ -779,6 +814,48 @@ class AIAgent:
         if data[4:8] == b'ftyp':
             return 'audio/mp4'
         return 'audio/mp4'
+
+    def _analyze_clothing_in_photo(self, image_data, is_list: bool = False) -> str | None:
+        """
+        Фаза 1: окремий виклик Gemini Vision для визначення типу одягу на фото.
+        Повертає структурований рядок (тип/стиль/для кого/колір) або None при помилці.
+        Якщо на фото немає одягу — повертає рядок з 'невизначено'.
+        """
+        try:
+            PROMPT = (
+                "Подивись на фото і визнач:\n"
+                "1. Тип одягу (наприклад: костюм, куртка, штани, сукня, футболка, "
+                "кофта/светр, джинси, взуття, аксесуари, спідниця, шорти, пальто тощо)\n"
+                "2. Стиль (спортивний / повсякденний / класичний / нарядний)\n"
+                "3. Для кого (дитяче / підліткове / доросле) — якщо видно на фото\n"
+                "4. Колір або кольори\n"
+                "Відповідай ТІЛЬКИ у такому форматі (без зайвих слів):\n"
+                "Тип: [тип одягу]\n"
+                "Стиль: [стиль]\n"
+                "Для кого: [вік/категорія або 'невідомо']\n"
+                "Колір: [колір(и)]\n"
+                "Якщо на фото немає одягу або неможливо визначити — напиши: Тип: невизначено"
+            )
+            parts = [types.Part(text=PROMPT)]
+            if is_list:
+                for img in image_data:
+                    parts.append(types.Part(inline_data=types.Blob(mime_type="image/png", data=img)))
+            else:
+                mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
+                parts.append(types.Part(inline_data=types.Blob(mime_type=mime, data=image_data)))
+
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=parts)],
+                config=types.GenerateContentConfig(max_output_tokens=512)
+            )
+            result = response.text.strip() if response.text else None
+            if result:
+                logger.info(f"👗 Попередній аналіз одягу: {result}")
+            return result
+        except Exception as e:
+            logger.warning(f"⚠️ Помилка попереднього аналізу одягу: {e}")
+            return None
 
     def _notify_ai_error(self, error_msg: str):
         """Відправити сповіщення про помилку AI в Telegram"""
