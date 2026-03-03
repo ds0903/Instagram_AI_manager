@@ -3597,8 +3597,11 @@ class DirectHandler:
                         continue
 
                     # Знаходимо чати на цій сторінці
-                    # Перезавантаження тільки для Директ (для Запити/Скриті запити не потрібне)
-                    found_chats = self.get_unread_chats()
+                    # Директ — тільки непрочитані; Запити/Скриті запити — всі чати (там нема "Unread" badge)
+                    if name in ('Запити', 'Скриті запити'):
+                        found_chats = self.get_all_chats()
+                    else:
+                        found_chats = self.get_unread_chats()
                     if not found_chats and name == 'Директ':
                         logger.info(f"  {name}: 0 чатів, перезавантажую (1/1)...")
                         self.driver.goto(url, wait_until='domcontentloaded')
