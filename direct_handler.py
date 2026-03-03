@@ -3260,8 +3260,11 @@ class DirectHandler:
         if stay_sec > 0:
             logger.info(f"Залишаємось в чаті {username} до {stay_sec}с (опитування кожні {poll_sec}с)")
             deadline = time.time() + stay_sec
+            _hb = getattr(self, '_heartbeat', None)
             while time.time() < deadline:
                 time.sleep(poll_sec)
+                if _hb:
+                    _hb(f"Stay-in-chat: {username}")
                 new_result = self._process_opened_chat(username, display_name)
                 if new_result:
                     logger.info(f"Нове повідомлення від {username} — скидаємо таймер")
@@ -3510,6 +3513,8 @@ class DirectHandler:
         def heartbeat(msg: str = None):
             if heartbeat_callback:
                 heartbeat_callback(msg)
+
+        self._heartbeat = heartbeat  # щоб _run_chat_with_stay міг оновлювати watchdog
 
         while True:
             try:

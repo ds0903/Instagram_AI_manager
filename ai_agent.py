@@ -489,7 +489,6 @@ class AIAgent:
                 model=self.model,
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                 config=types.GenerateContentConfig(max_output_tokens=10),
-                request_options=types.RequestOptions(timeout=90)
             )
             raw_text = getattr(response, 'text', None) or ''
             answer = raw_text.strip().upper()
@@ -655,7 +654,6 @@ class AIAgent:
                                 types.SafetySetting(category='HARM_CATEGORY_CIVIC_INTEGRITY', threshold='BLOCK_NONE'),
                             ]
                         ),
-                        request_options=types.RequestOptions(timeout=90)
                     )
 
                     # Отримуємо текст відповіді
@@ -682,8 +680,7 @@ class AIAgent:
                                         types.SafetySetting(category='HARM_CATEGORY_CIVIC_INTEGRITY', threshold='BLOCK_NONE'),
                                     ]
                                 ),
-                                request_options=types.RequestOptions(timeout=90)
-                            )
+                                    )
                             try:
                                 assistant_message = retry_resp.text
                             except Exception:

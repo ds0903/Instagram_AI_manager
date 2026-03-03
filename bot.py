@@ -432,26 +432,21 @@ class InstagramBot:
         try:
             time.sleep(2)
             current_url = self.page.url
+            logger.info(f"is_logged_in: URL = {current_url}")
 
             if 'login' in current_url.lower() or 'accounts/login' in current_url:
+                logger.info("is_logged_in: URL містить login → не залогінено")
                 return False
 
-            # "Continue as ..." — сесія протухла, треба клікнути Continue або перелогінитись
-            if self.page.locator(
-                "xpath=//div[@role='button'][normalize-space(.)='Continue'] | "
-                "xpath=//button[normalize-space(.)='Continue']"
-            ).count() > 0:
-                logger.warning("is_logged_in: знайдено кнопку 'Continue' — сесія не валідна")
-                return False
-
-            if self.page.locator("xpath=//a[contains(@href, '/accounts/edit/')]").count() > 0:
-                return True
-            if self.page.locator("xpath=//svg[@aria-label='Profile']").count() > 0:
+            # Якщо ми на instagram.com і не на login — залогінені
+            if 'instagram.com' in current_url:
+                logger.info("is_logged_in: URL instagram.com, не login → залогінено")
                 return True
 
             return False
 
-        except Exception:
+        except Exception as e:
+            logger.warning(f"is_logged_in exception: {e}")
             return False
 
     def go_to_direct(self):
